@@ -5,17 +5,20 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
 
+> **Current game support: Counter-Strike 2 only.**
+> AutoClip uses a plugin architecture — each game is a self-contained module. CS2 is the only built-in game plugin right now, but adding support for a new game is a single new file. Contributions welcome.
+
 ---
 
 ## Features
 
-- **Automatic game triggers** — CS2 kills, headshots, multi-kills, clutches, bomb events via Game State Integration (GSI). Zero anti-cheat risk — GSI is an official Valve feature.
-- **Audio triggers** — ML-based laughter detection (PANNs CNN6, local inference) monitors your mic and chat audio simultaneously.
+- **Automatic game triggers** — CS2 kills, headshots, multi-kills, clutches, and bomb events via Game State Integration (GSI). Zero anti-cheat risk — GSI is an official Valve feature.
+- **Audio triggers** — ML-based laughter detection (PANNs CNN6, local inference) monitors your mic and chat audio simultaneously. New audio triggers can be added as plugins.
 - **Manual hotkey** — save a clip at any time with `Ctrl+Shift+S` (configurable).
 - **Clip browser** — browse, preview, trim, and export clips with a built-in player, timeline scrubber, and per-track waveforms.
 - **Multi-track audio** — record game audio, mic, and chat as separate tracks; mix down on export.
 - **Clip metadata** — events, map, round, team, and score are encoded in the filename so clips are self-describing.
-- **Extensible** — adding a new game or audio trigger is a single new file.
+- **Extensible** — adding a new game or audio trigger is a single new file. See [Adding a new game](#adding-a-new-game) below.
 
 ---
 
@@ -76,7 +79,7 @@ This downloads ~14 MB of pretrained weights from Zenodo and exports them to `~/.
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/autoclip.git
+git clone https://github.com/SmoJa/autoclip.git
 cd autoclip
 pip install -r autoclip/requirements.txt
 ```

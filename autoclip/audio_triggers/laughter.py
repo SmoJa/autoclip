@@ -32,8 +32,7 @@ logger = logging.getLogger(__name__)
 _MODELS_DIR = Path.home() / ".cache" / "autoclip" / "models"
 _MODEL_PATH = _MODELS_DIR / "panns_cnn6.onnx"
 
-# Set to a GitHub release URL before shipping; leave empty to require manual placement.
-_MODEL_URL = ""
+_MODEL_URL = "https://github.com/SmoJa/autoclip/releases/download/v0.1.0/panns_cnn6.onnx"
 
 # ── AudioSet class indices for laughter variants ──────────────────────────────
 # Source: AudioSet ontology, PANNs 527-class label map (Kong et al.)
