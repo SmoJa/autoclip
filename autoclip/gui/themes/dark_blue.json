@@ -1,0 +1,31 @@
+{
+  "name": "Dark Blue",
+  "author": "AutoClip",
+  "description": "Dark theme with blue accent.",
+  "colors": {
+    "bg_deep":       "#0a0c11",
+    "bg_base":       "#13161e",
+    "bg_raised":     "#1a1f2a",
+    "bg_overlay":    "#222836",
+    "border":        "#252d3d",
+    "text":          "#d4d4d4",
+    "text_dim":      "#7a8899",
+    "text_faint":    "#4a5566",
+    "accent":        "#4488ff",
+    "accent_hover":  "#6699ff",
+    "accent_text":   "#ffffff",
+    "success":       "#00cc77",
+    "warning":       "#ffaa00",
+    "error":         "#cc3344",
+    "hdr_badge":     "#cc88ff",
+    "event_clip_bg": "#001233",
+    "waveform":      "#4488ff",
+    "playhead":      "#ffffff",
+    "handle_in":     "#00cc77",
+    "handle_out":    "#4488ff",
+    "track_game":    "#4488ff",
+    "track_mic":     "#00cc77",
+    "track_chat":    "#aa55ff",
+    "track_custom":  "#7788aa"
+  }
+}

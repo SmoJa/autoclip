@@ -1,0 +1,31 @@
+{
+  "name": "Monochrome",
+  "author": "AutoClip",
+  "description": "Pure black and white, maximised for readability.",
+  "colors": {
+    "bg_deep":       "#000000",
+    "bg_base":       "#0d0d0d",
+    "bg_raised":     "#1a1a1a",
+    "bg_overlay":    "#242424",
+    "border":        "#333333",
+    "text":          "#ffffff",
+    "text_dim":      "#aaaaaa",
+    "text_faint":    "#666666",
+    "accent":        "#ffffff",
+    "accent_hover":  "#cccccc",
+    "accent_text":   "#000000",
+    "success":       "#cccccc",
+    "warning":       "#aaaaaa",
+    "error":         "#ff4444",
+    "hdr_badge":     "#aaaaaa",
+    "event_clip_bg": "#111111",
+    "waveform":      "#ffffff",
+    "playhead":      "#dddddd",
+    "handle_in":     "#aaaaaa",
+    "handle_out":    "#ffffff",
+    "track_game":    "#ffffff",
+    "track_mic":     "#cccccc",
+    "track_chat":    "#888888",
+    "track_custom":  "#555555"
+  }
+}

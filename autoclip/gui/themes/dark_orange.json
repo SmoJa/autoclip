@@ -1,0 +1,31 @@
+{
+  "name": "Dark Orange",
+  "author": "AutoClip",
+  "description": "Default dark theme with orange accent.",
+  "colors": {
+    "bg_deep":       "#0e0f11",
+    "bg_base":       "#16181b",
+    "bg_raised":     "#1e2024",
+    "bg_overlay":    "#252830",
+    "border":        "#2a2b2e",
+    "text":          "#d4d4d4",
+    "text_dim":      "#888888",
+    "text_faint":    "#555555",
+    "accent":        "#ff4c00",
+    "accent_hover":  "#ff6a24",
+    "accent_text":   "#ffffff",
+    "success":       "#00cc66",
+    "warning":       "#ff8c00",
+    "error":         "#cc3300",
+    "hdr_badge":     "#cc88ff",
+    "event_clip_bg": "#1a0500",
+    "waveform":      "#ff4c00",
+    "playhead":      "#ffffff",
+    "handle_in":     "#00cc66",
+    "handle_out":    "#ff4c00",
+    "track_game":    "#ff4c00",
+    "track_mic":     "#00cc66",
+    "track_chat":    "#4488ff",
+    "track_custom":  "#aa88ff"
+  }
+}

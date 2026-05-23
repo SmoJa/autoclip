@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ML model files — generated locally, not committed
+*.onnx
+*.pth
+*.tflite
+panns_data/
+
+# Logs
+*.log
+/tmp/autoclip.log
+
+# User config and cache — machine-specific
+~/.config/autoclip/
+~/.cache/autoclip/
+
+# Claude Code project instructions
+.claude/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

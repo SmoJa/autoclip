@@ -1,0 +1,31 @@
+{
+  "name": "Midnight Purple",
+  "author": "AutoClip",
+  "description": "Deep purple dark theme.",
+  "colors": {
+    "bg_deep":       "#0c0b14",
+    "bg_base":       "#141220",
+    "bg_raised":     "#1e1b2e",
+    "bg_overlay":    "#27233e",
+    "border":        "#2e2a44",
+    "text":          "#d4d4d4",
+    "text_dim":      "#8880aa",
+    "text_faint":    "#554f77",
+    "accent":        "#9955ff",
+    "accent_hover":  "#aa66ff",
+    "accent_text":   "#ffffff",
+    "success":       "#00cc88",
+    "warning":       "#ff8800",
+    "error":         "#cc3344",
+    "hdr_badge":     "#ff88cc",
+    "event_clip_bg": "#1a0033",
+    "waveform":      "#9955ff",
+    "playhead":      "#ffffff",
+    "handle_in":     "#00cc88",
+    "handle_out":    "#9955ff",
+    "track_game":    "#9955ff",
+    "track_mic":     "#00cc88",
+    "track_chat":    "#ff88cc",
+    "track_custom":  "#6655aa"
+  }
+}
