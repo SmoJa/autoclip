@@ -689,7 +689,7 @@ class RecordingTab(QWidget):
                 "Name=AutoClip\n"
                 "Comment=Automatic game clip recorder\n"
                 f"Exec=bash -c \"cd {install_dir} && QT_QPA_PLATFORM=xcb "
-                f"python3 -m autoclip.main 2>&1 | tee /tmp/autoclip.log\"\n"
+                f"python3 -m autoclip.main >> /tmp/autoclip.log 2>&1\"\n"
                 "Hidden=false\n"
                 "NoDisplay=false\n"
                 "X-GNOME-Autostart-enabled=true\n"

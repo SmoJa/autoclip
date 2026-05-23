@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=AutoClip
 Comment=Automatic game clip recorder
-Exec=konsole --noclose -e bash -c "cd ~/.local/share/autoclip && QT_QPA_PLATFORM=xcb python3 -m autoclip.main 2>&1 | tee /tmp/autoclip.log"
+Exec=bash -c "cd ~/.local/share/autoclip && QT_QPA_PLATFORM=xcb python3 -m autoclip.main >> /tmp/autoclip.log 2>&1"
 Icon=video-display
 Terminal=false
 Type=Application
