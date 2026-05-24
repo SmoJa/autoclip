@@ -104,16 +104,9 @@ To enable autostart on login, use the toggle in **Settings → Application**.
 ## Running
 
 ```bash
-QT_QPA_PLATFORM=xcb python3 -m autoclip.main
+~/.local/share/autoclip/autoclip/run.sh
 ```
 
-Or use the included helper script (logs to `/tmp/autoclip.log`):
-
-```bash
-./autoclip/run.sh
-```
-
-> `QT_QPA_PLATFORM=xcb` forces XWayland rendering. This is required for the embedded mpv player to work correctly under Wayland compositors.
 
 ---
 
