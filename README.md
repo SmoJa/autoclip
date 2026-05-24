@@ -168,8 +168,6 @@ AutoClip is in early release. The following areas have not been thoroughly teste
 - **Non-KDE desktop environments** — developed and tested on KDE Plasma. GNOME, Hyprland, and other compositors should work but autostart and desktop launcher integration is untested.
 - **Non-Nobara/Fedora systems** — only tested on Nobara Linux. Other distros should work but may require additional setup.
 - **Native Wayland** — AutoClip runs under XWayland. Native Wayland rendering is not currently supported.
-- **Long recording sessions** — gpu-screen-recorder can occasionally stop silently after extended sessions. A watchdog to detect and restart it automatically is planned but not yet implemented.
-
 Contributions and bug reports are welcome.
 
 ---
