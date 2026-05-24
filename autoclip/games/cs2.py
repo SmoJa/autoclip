@@ -252,6 +252,8 @@ class CS2EventDetector:
         return self.current_mode in modes
 
     def process(self, data: Dict[str, Any]):
+        if not getattr(self.config.cs2, "enabled", True):
+            return
         map_data   = data.get("map", {})
         player     = data.get("player", {})
         state      = player.get("state", {})
@@ -633,6 +635,10 @@ class CS2Tab:
 
         cs2 = config.cs2
 
+        w._enabled_cb = QCheckBox("Enable CS2 monitoring")
+        w._enabled_cb.setChecked(getattr(cs2, "enabled", True))
+        layout.addWidget(w._enabled_cb)
+
         # ── GSI Setup ────────────────────────────────────────────────
         gsi = QGroupBox("GSI Setup")
         gl = QVBoxLayout(gsi)
@@ -771,6 +777,7 @@ class CS2Tab:
         enabled_modes = cs2.enabled_modes or []
 
         def _save():
+            cs2.enabled              = w._enabled_cb.isChecked()
             cs2.kill_trigger         = kill_cb.isChecked()
             cs2.headshot_trigger     = hs_cb.isChecked()
             cs2.knife_kill_trigger   = knife_cb.isChecked()
@@ -801,7 +808,7 @@ class CS2Tab:
         layout.addWidget(modes_g)
         layout.addStretch()
 
-        for cb in [kill_cb, hs_cb, knife_cb, he_cb, fire_cb, util_cb,
+        for cb in [w._enabled_cb, kill_cb, hs_cb, knife_cb, he_cb, fire_cb, util_cb,
                    firstk_cb, multikill_cb, ace_cb, roundwin_cb,
                    roundloss_cb, clutch_cb, lowhealth_cb,
                    bombplant_cb, bombdefuse_cb, death_cb, spectating_cb]:

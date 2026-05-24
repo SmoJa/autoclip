@@ -333,6 +333,8 @@ def LaughterWidget(config: Any, parent=None):
 
     # ── Main widget ────────────────────────────────────────────────────────
     class _Widget(QWidget):
+        settings_changed = pyqtSignal()
+
         def __init__(self, cfg_obj, par):
             super().__init__(par)
             self._config     = cfg_obj
@@ -491,6 +493,15 @@ def LaughterWidget(config: Any, parent=None):
             src_l.addWidget(hint, 2, 0, 1, 2)
 
             root.addWidget(src_box)
+
+            # Auto-save on any setting change
+            self._enabled_cb.toggled.connect(lambda _: self.settings_changed.emit())
+            self._sens_slider.sliderReleased.connect(self.settings_changed.emit)
+            self._cooldown_spin.editingFinished.connect(self.settings_changed.emit)
+            self._mic_cb.toggled.connect(lambda _: self.settings_changed.emit())
+            self._mic_combo.currentIndexChanged.connect(lambda _: self.settings_changed.emit())
+            self._chat_cb.toggled.connect(lambda _: self.settings_changed.emit())
+            self._chat_combo.currentIndexChanged.connect(lambda _: self.settings_changed.emit())
 
         def _refresh_model_status(self):
             if _MODEL_PATH.exists():

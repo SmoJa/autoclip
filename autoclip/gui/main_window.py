@@ -142,32 +142,44 @@ class CollapsibleSection(QWidget):
     toggled = pyqtSignal(bool)  # emitted after expand/collapse
 
     def __init__(self, title: str, widget: QWidget, expanded: bool = True,
-                 parent=None):
+                 header_widget: QWidget = None, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header button
+        t = _theme.current
+
+        # Header row: toggle button (left) + optional widget (right)
+        header_row = QWidget()
+        header_row.setStyleSheet(
+            f"QWidget {{ background: {t.bg_base}; border-bottom: 1px solid {t.border}; }}"
+        )
+        hl = QHBoxLayout(header_row)
+        hl.setContentsMargins(0, 0, 12, 0)
+        hl.setSpacing(0)
+
         self._toggle = QPushButton()
         self._toggle.setCheckable(True)
         self._toggle.setChecked(expanded)
-        t = _theme.current
         self._toggle.setStyleSheet(
             f"QPushButton {{"
-            f"  background: {t.bg_base}; border: none;"
-            f"  border-bottom: 1px solid {t.border};"
+            f"  background: transparent; border: none;"
             f"  color: {t.text}; font-size: 13px; font-weight: bold;"
             f"  padding: 10px 16px; text-align: left;"
             f"}}"
             f"QPushButton:hover {{ background: {t.bg_raised}; }}"
-            f"QPushButton:checked {{ border-bottom: 2px solid {t.accent}; }}"
         )
+        hl.addWidget(self._toggle, 1)
+
+        if header_widget is not None:
+            hl.addWidget(header_widget, 0)
+
         self._update_label(title, expanded)
         self._toggle.clicked.connect(lambda checked: self._on_toggle(title, checked))
-        layout.addWidget(self._toggle)
+        layout.addWidget(header_row)
 
-        # Content — stretch=1 so it fills available space when expanded
+        # Content
         self._content = widget
         self._content.setVisible(expanded)
         layout.addWidget(self._content, 1)
@@ -180,12 +192,6 @@ class CollapsibleSection(QWidget):
     def _on_toggle(self, title: str, checked: bool):
         self._content.setVisible(checked)
         self._update_label(title, checked)
-        from PyQt6.QtWidgets import QSizePolicy as _QSP
-        sp = self.sizePolicy()
-        sp.setVerticalPolicy(
-            _QSP.Policy.Expanding if checked else _QSP.Policy.Maximum
-        )
-        self.setSizePolicy(sp)
         self.updateGeometry()
         self.toggled.emit(checked)
 
@@ -242,9 +248,19 @@ class AutoRecordTab(QWidget):
 
                 if widget:
                     self.game_widgets[plugin_cls.NAME] = widget
+
+                    enable_cb = None
+                    if hasattr(widget, "_enabled_cb"):
+                        from PyQt6.QtWidgets import QCheckBox as _QCB
+                        enable_cb = _QCB("Enabled")
+                        enable_cb.setChecked(widget._enabled_cb.isChecked())
+                        enable_cb.toggled.connect(widget._enabled_cb.setChecked)
+                        widget._enabled_cb.toggled.connect(enable_cb.setChecked)
+
                     section = CollapsibleSection(
                         plugin_cls.NAME, widget,
-                        expanded=(i == 0)
+                        expanded=(i == 0),
+                        header_widget=enable_cb
                     )
                     section.toggled.connect(self._on_section_toggled)
                     self._layout.addWidget(section, 0)
@@ -258,11 +274,9 @@ class AutoRecordTab(QWidget):
         self._update_stretches()
 
     def _update_stretches(self):
-        any_expanded = any(s._toggle.isChecked() for s in self._sections)
         for s in self._sections:
-            self._layout.setStretch(self._layout.indexOf(s), 1 if s._toggle.isChecked() else 0)
-        # Trailing stretch fills space only when everything is collapsed
-        self._layout.setStretch(self._layout.count() - 1, 0 if any_expanded else 1)
+            self._layout.setStretch(self._layout.indexOf(s), 0)
+        self._layout.setStretch(self._layout.count() - 1, 1)
 
 
 class RecordingTab(QWidget):
@@ -794,44 +808,49 @@ class AudioTriggersTab(QWidget):
             self._layout.addWidget(lbl)
             self._layout.addStretch(1)
         else:
-            for i, cls in enumerate(plugins):
+            for cls in plugins:
                 widget = cls.get_config_widget(cls, config)
                 if widget is None:
                     continue
 
-                # Wrap plugin widget + save button in a single content widget
                 content = QWidget()
                 cl = QVBoxLayout(content)
                 cl.setContentsMargins(16, 16, 16, 16)
                 cl.setSpacing(12)
                 cl.addWidget(widget)
-
-                save_btn = QPushButton("SAVE & APPLY")
-                save_btn.setObjectName("primary")
-                plugin_name = cls.NAME
-                save_btn.clicked.connect(
-                    lambda checked=False, n=plugin_name: self._save_plugin(n)
-                )
-                cl.addWidget(save_btn)
                 cl.addStretch()
 
-                section = CollapsibleSection(cls.NAME, content, expanded=(i == 0))
+                # Enable checkbox shown in the header even when collapsed
+                from PyQt6.QtWidgets import QCheckBox as _QCB
+                enable_cb = _QCB("Enabled")
+                init_enabled = widget._enabled_cb.isChecked() if hasattr(widget, "_enabled_cb") else False
+                enable_cb.setChecked(init_enabled)
+                if hasattr(widget, "_enabled_cb"):
+                    enable_cb.toggled.connect(widget._enabled_cb.setChecked)
+                    widget._enabled_cb.toggled.connect(enable_cb.setChecked)
+
+                section = CollapsibleSection(cls.NAME, content, expanded=False,
+                                             header_widget=enable_cb)
                 section.toggled.connect(self._on_section_toggled)
                 self._layout.addWidget(section, 0)
                 self._sections.append(section)
                 self._plugin_widgets[cls.NAME] = widget
 
-            self._layout.addStretch(0)
-            self._update_stretches()
+                plugin_name = cls.NAME
+                if hasattr(widget, "settings_changed"):
+                    widget.settings_changed.connect(
+                        lambda n=plugin_name: self._save_plugin(n)
+                    )
+
+            self._layout.addStretch(1)
 
     def _on_section_toggled(self, _expanded: bool):
         self._update_stretches()
 
     def _update_stretches(self):
-        any_expanded = any(s._toggle.isChecked() for s in self._sections)
         for s in self._sections:
-            self._layout.setStretch(self._layout.indexOf(s), 1 if s._toggle.isChecked() else 0)
-        self._layout.setStretch(self._layout.count() - 1, 0 if any_expanded else 1)
+            self._layout.setStretch(self._layout.indexOf(s), 0)
+        self._layout.setStretch(self._layout.count() - 1, 1)
 
     def _save_plugin(self, name: str):
         widget = self._plugin_widgets.get(name)
