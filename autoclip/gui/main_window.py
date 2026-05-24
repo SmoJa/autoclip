@@ -1012,6 +1012,8 @@ class MainWindow(QMainWindow):
         self.event_log.set_trigger_styles(styles)
         # Unsaved-changes guard for Settings tab
         self._prev_tab_index = 0
+        # Initialise clip counter from disk so it shows total, not just this session
+        self._refresh_clip_count()
         self._tab_change_guard = False
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -1077,6 +1079,12 @@ class MainWindow(QMainWindow):
             game    = e.split(":", 1)[0] if ":" in e else ""
             trigger = e.split(":", 1)[1] if ":" in e else e
             self.event_log.add_trigger(trigger, game)
+
+    def _refresh_clip_count(self):
+        from autoclip.core.clips import scan_library
+        clips = scan_library(self.config.output_dir)
+        self._clip_count = len(clips)
+        self._clips_lbl.setText(f"CLIPS  {self._clip_count}")
 
     def _on_clip(self, reason: str):
         self._clip_count += 1

@@ -7,6 +7,7 @@ Clip management tab.
 import subprocess
 import logging
 import threading
+import queue
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -32,6 +33,19 @@ logger = logging.getLogger(__name__)
 # Thumbnail cache
 _THUMB_DIR = Path.home() / ".cache" / "autoclip" / "thumbs"
 _THUMB_DIR.mkdir(parents=True, exist_ok=True)
+
+# Single worker thread for thumbnail generation — prevents ffmpeg overload
+_thumb_queue: queue.Queue = queue.Queue()
+
+def _thumb_worker():
+    while True:
+        fn = _thumb_queue.get()
+        try:
+            fn()
+        except Exception:
+            pass
+
+threading.Thread(target=_thumb_worker, daemon=True, name="thumb-worker").start()
 
 def _unique_export_name(export_dir: Path, name: str, suffix: str) -> str:
     """Return name, or name (1), name (2)... if file already exists."""
@@ -122,6 +136,10 @@ def _get_thumbnail(clip_path: Path, size: int = 120,
                 str(thumb_path)
             ], timeout=10, capture_output=True)
 
+            if result.returncode != 0 or not thumb_path.exists():
+                err = result.stderr.decode(errors="replace").strip()
+                logger.warning(f"Thumbnail failed for {clip_path.name} seek={seek}: {err or 'no output'}")
+
             # Fallback to plain scale if HDR filter failed
             if is_hdr and (result.returncode != 0 or not thumb_path.exists()):
                 subprocess.run([
@@ -133,7 +151,8 @@ def _get_thumbnail(clip_path: Path, size: int = 120,
                     "-q:v", "3",
                     str(thumb_path)
                 ], timeout=10, capture_output=True)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Thumbnail exception for {clip_path.name}: {e}")
             return None
     if thumb_path.exists():
         pm = _QPixmap(str(thumb_path))
@@ -284,16 +303,34 @@ class IconCard(QWidget):
 
             # Async thumbnail
             if data is not None and hasattr(data, "path"):
-                import threading
+                import hashlib
                 post   = getattr(data, "post_event_secs", -1)
                 dur    = getattr(data, "duration_secs", 0.0)
                 is_hdr = getattr(data, "is_hdr", False)
-                seek_sec = max(1, dur - post) if post >= 0 and dur > 0 else -1
-                def _load(p=data.path, s=seek_sec, hdr=is_hdr):
-                    pm = _get_thumbnail(p, size=CARD_W, event_offset=int(s), is_hdr=hdr)
-                    if pm:
-                        self._thumb_ready.emit(pm)
-                threading.Thread(target=_load, daemon=True).start()
+                # Fall back to 30s if clip not yet probed — seek lands near the event
+                # and the cache key matches once the real duration is known (~30s rounds same)
+                effective_dur = dur if dur > 0 else 30.0
+                seek_sec = max(1, effective_dur - post) if post >= 0 else -1
+                actual_seek = int(seek_sec) if seek_sec >= 0 else 1
+                cache_key = f"{data.path}@{actual_seek}@{CARD_W}@{'hdr' if is_hdr else 'sdr'}"
+                cached = _THUMB_DIR / f"{hashlib.md5(cache_key.encode()).hexdigest()}.jpg"
+                if cached.exists():
+                    # Already cached — set immediately, no spinner needed
+                    from PyQt6.QtGui import QPixmap as _QP
+                    pm = _QP(str(cached))
+                    if not pm.isNull():
+                        self._icon.setPixmap(pm.scaled(
+                            CARD_W, CARD_H,
+                            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                            Qt.TransformationMode.SmoothTransformation))
+                else:
+                    self._spinner = _Spinner(32, self)
+                    self._spinner.move(8 + (CARD_W - 32) // 2, 8 + (CARD_H - 32) // 2)
+                    self._spinner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                    def _load(p=data.path, s=seek_sec, hdr=is_hdr):
+                        pm = _get_thumbnail(p, size=CARD_W, event_offset=int(s), is_hdr=hdr)
+                        self._thumb_ready.emit(pm)  # always emit so spinner is cleared
+                    _thumb_queue.put(_load)
 
             # Gradient overlay at bottom
             self._overlay = QLabel(self)
@@ -379,6 +416,10 @@ class IconCard(QWidget):
             self._del_btn.setVisible(False)
             self._del_btn.clicked.connect(self._on_del_clicked)
 
+            # Raise spinner above all other widgets now that they're all created
+            if hasattr(self, "_spinner"):
+                self._spinner.raise_()
+
         self._update_style()
 
     def set_sublabel(self, t: str): self._sub.setText(t)
@@ -446,16 +487,20 @@ class IconCard(QWidget):
         painter.end()
 
     def _apply_thumb(self, pm: QPixmap):
-        if self.is_folder:
-            self._icon.setPixmap(pm.scaled(
-                FOLDER_W, FOLDER_H,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation))
-        else:
-            self._icon.setPixmap(pm.scaled(
-                CARD_W, CARD_H,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation))
+        if pm is not None:
+            if self.is_folder:
+                self._icon.setPixmap(pm.scaled(
+                    FOLDER_W, FOLDER_H,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+            else:
+                self._icon.setPixmap(pm.scaled(
+                    CARD_W, CARD_H,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation))
+        if hasattr(self, "_spinner"):
+            self._spinner.stop()
+            self._spinner.hide()
 
     def mousePressEvent(self, e):      self.clicked.emit(self.data)
     def mouseDoubleClickEvent(self, e): self.double_clicked.emit(self.data)
@@ -744,7 +789,7 @@ class GridView(QWidget):
                 "" if is_export else clip.map_display,
                 "" if is_export else clip.mode_display,
                 data=clip,
-                pixmap=_clip_pixmap(clip.is_hdr),
+                pixmap=None,
                 is_folder=False,
                 duration=clip.duration_str,
                 size_mb=clip.size_mb,
