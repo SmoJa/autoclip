@@ -79,14 +79,9 @@ pip install -r autoclip/requirements.txt
 
 ### Laughter detection model (optional)
 
-Laughter detection requires a one-time model export (needs `torch` and `panns_inference`, download-only deps):
+The laughter detection model is downloaded automatically the first time you enable it in **Settings → Audio Triggers → Laughter**. No extra steps needed.
 
-```bash
-pip install torch panns_inference onnxruntime
-python3 scripts/export_audio_classifier.py
-```
-
-This downloads ~14 MB of pretrained weights from Zenodo and exports them to `~/.cache/autoclip/models/panns_cnn6.onnx`. After that, `torch` and `panns_inference` can be uninstalled — only `onnxruntime` is needed at runtime.
+If you prefer to generate the model file yourself (e.g. to verify it), you can run the export script — see `scripts/export_audio_classifier.py` for instructions.
 
 ---
 
