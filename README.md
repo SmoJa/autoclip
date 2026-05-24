@@ -88,12 +88,16 @@ If you prefer to generate the model file yourself (e.g. to verify it), you can r
 ## Installation
 
 ```bash
-git clone https://github.com/SmoJa/autoclip.git
-cd autoclip
-pip install -r autoclip/requirements.txt
+curl -s https://raw.githubusercontent.com/SmoJa/autoclip/main/install.sh | bash
 ```
 
-To add a desktop launcher and optional autostart-on-login, use the toggle in **Settings → Application** once AutoClip is running.
+This installs AutoClip to `~/.local/share/autoclip/`, installs Python dependencies, and adds an entry to your application menu. After that, launch AutoClip from your application menu or run:
+
+```bash
+~/.local/share/autoclip/autoclip/run.sh
+```
+
+To enable autostart on login, use the toggle in **Settings → Application**.
 
 ---
 
