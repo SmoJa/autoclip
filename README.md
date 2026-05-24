@@ -22,6 +22,19 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 
 ---
 
+## Screenshots
+
+![Clip browser](Screenshot_2.png)
+*Clip browser — browse by game and date, preview thumbnails*
+
+![Clip timeline](Screenshot_3.png)
+*Player with timeline scrubber, event markers, and per-track waveforms*
+
+![Settings](Screenshot_1.png)
+*Settings — recorder, audio tracks, encoding, and clip timing*
+
+---
+
 ## Requirements
 
 ### System packages
