@@ -28,7 +28,7 @@ panns_data/
 .claude/
 
 # Plugins not yet ready for release
-autoclip/audio_triggers/clip_that.py
+autoclip/audio_triggers/voice.py
 
 # Editor / IDE
 .vscode/
