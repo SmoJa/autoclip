@@ -157,6 +157,23 @@ Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Se
 
 ---
 
+## Known limitations and untested areas
+
+AutoClip is in early release. The following areas have not been thoroughly tested and may have rough edges:
+
+- **Laughter detection** — the ML trigger is implemented and functional but has not been extensively tested in real gameplay sessions. Sensitivity defaults may need tuning per setup.
+- **AMD and Intel GPUs** — codec and hardware detection is implemented for AMD and Intel but has only been tested on NVIDIA. Encoding settings may need manual adjustment.
+- **HDR recording** — the HDR codec path exists but is untested.
+- **Plugin architecture** — the game and audio trigger plugin systems are designed for extensibility but have not been tested with anything beyond the built-in CS2 and laughter plugins. There may be rough edges when adding new ones.
+- **Non-KDE desktop environments** — developed and tested on KDE Plasma. GNOME, Hyprland, and other compositors should work but autostart and desktop launcher integration is untested.
+- **Non-Nobara/Fedora systems** — only tested on Nobara Linux. Other distros should work but may require additional setup.
+- **Native Wayland** — AutoClip runs under XWayland. Native Wayland rendering is not currently supported.
+- **Long recording sessions** — gpu-screen-recorder can occasionally stop silently after extended sessions. A watchdog to detect and restart it automatically is planned but not yet implemented.
+
+Contributions and bug reports are welcome.
+
+---
+
 ## Project layout
 
 ```
