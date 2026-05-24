@@ -76,6 +76,9 @@ class RecorderManager:
         self._restart_attempts = 0
         self._restart_window_start = 0.0
 
+        # Silent-failure detection: count consecutive saves that produced no file
+        self._consecutive_save_failures = 0
+
     def is_installed(self) -> bool:
         parts = self.config.gpu_recorder_path.strip().split()
         return shutil.which(parts[0]) is not None
@@ -286,6 +289,30 @@ class RecorderManager:
 
     def _stop_watchdog(self):
         self._watchdog_stop.set()
+
+    def report_save_success(self):
+        """Reset silent-failure counter after a clip was written successfully."""
+        self._consecutive_save_failures = 0
+
+    def report_save_failure(self):
+        """Called when a save signal produced no output file.
+        After 2 consecutive failures, force-restart gsr — it is likely stuck."""
+        self._consecutive_save_failures += 1
+        logger.warning(
+            f"Save produced no output ({self._consecutive_save_failures} consecutive)"
+        )
+        if self._consecutive_save_failures >= 2:
+            logger.warning("gsr appears stuck — forcing restart")
+            self._consecutive_save_failures = 0
+            game = self._last_game
+            threading.Thread(
+                target=self._force_restart, args=(game,), daemon=True
+            ).start()
+
+    def _force_restart(self, game: str):
+        self.stop()
+        time.sleep(1.0)
+        self.start(game)
 
     def _watchdog(self):
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):

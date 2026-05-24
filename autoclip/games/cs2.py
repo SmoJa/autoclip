@@ -271,6 +271,10 @@ class CS2EventDetector:
 
         phase = map_data.get("phase", "")
         in_match = phase in ("live", "freezetime", "over")
+        # Also process kills when the previous tick was in a match — catches final kills
+        # that arrive in the same GSI payload as a phase change to intermission/gameover
+        # (e.g. final kill at halftime, Arms Race game-winning knife kill).
+        prev_in_match = prev_map.get("phase", "") in ("live", "freezetime", "over")
 
         # Spectating detection — stateful, because GSI uses delta encoding and only
         # sends player.steamid when it changes (not every tick).
@@ -316,7 +320,7 @@ class CS2EventDetector:
             if self._death_triggered:
                 self._death_triggered = False
 
-        if not in_match:
+        if not in_match and not prev_in_match:
             self._prev_state = data
             return
 
@@ -382,6 +386,11 @@ class CS2EventDetector:
                         self._fire("ace", kill_weapon)
                     else:
                         self._fire("multikill", kill_weapon)
+
+        # Non-kill events only apply during clean match phases, not transition phases
+        if not in_match:
+            self._prev_state = data
+            return
 
         # ── Death detection ─────────────────────────────────────────────
         # Only fires for the local player (not while spectating someone else).

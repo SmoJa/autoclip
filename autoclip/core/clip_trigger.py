@@ -229,8 +229,10 @@ class ClipTrigger:
 
         if newest is None:
             logger.warning("No new clip file found after save signal — skipping rename")
+            self.recorder.report_save_failure()
             return
 
+        self.recorder.report_save_success()
         try:
             self._rename_clip(events, combined, save_signal_time, clip_type,
                               newest=newest, history=history)
