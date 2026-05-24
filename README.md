@@ -46,12 +46,9 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 | `ffmpeg` | Thumbnails, export, clip probing |
 | Python 3.10+ | Runtime |
 
-On Fedora / Nobara:
-```bash
-sudo dnf install mpv ffmpeg
-```
+Install `mpv` and `ffmpeg` via your distro's package manager.
 
-Install via your distro's package manager, or as a Flatpak:
+Install gpu-screen-recorder via your distro's package manager, or as a Flatpak:
 ```bash
 flatpak install flathub com.dec05eba.gpu_screen_recorder
 ```
