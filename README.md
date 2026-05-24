@@ -51,7 +51,19 @@ On Fedora / Nobara:
 sudo dnf install mpv ffmpeg
 ```
 
-gpu-screen-recorder must be built from source — see its README. The default expected path is `/usr/local/bin/gpu-screen-recorder` (configurable in Settings).
+**Nobara:** gpu-screen-recorder is available in the Nobara package repository and may already be installed:
+```bash
+sudo dnf install gpu-screen-recorder
+```
+
+**Other distros:** the Flatpak is the easiest option:
+```bash
+flatpak install flathub com.dec05eba.gpu_screen_recorder
+```
+
+**Build from source:** needed if you want a version newer than what's packaged, or if your distro doesn't have it. See the [gpu-screen-recorder README](https://git.dec05eba.com/gpu-screen-recorder/about/).
+
+The default expected path is `/usr/local/bin/gpu-screen-recorder` (configurable in Settings → Recorder).
 
 ### Python dependencies
 
