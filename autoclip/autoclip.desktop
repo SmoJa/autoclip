@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=AutoClip
 Comment=Automatic game clip recorder
-Exec=/home/david/.local/share/autoclip/autoclip/run.sh
+Exec=bash -c "~/.local/share/autoclip/autoclip/run.sh"
 Icon=video-display
 Terminal=false
 Type=Application

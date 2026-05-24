@@ -320,7 +320,7 @@ def LaughterWidget(config: Any, parent=None):
             import urllib.request
             tmp = self._dest.with_suffix(".tmp")
             try:
-                self._dest.parent().mkdir(parents=True, exist_ok=True)
+                self._dest.parent.mkdir(parents=True, exist_ok=True)
                 def _hook(count, block_size, total):
                     if total > 0:
                         self.progress.emit(min(100, int(count * block_size * 100 / total)))
