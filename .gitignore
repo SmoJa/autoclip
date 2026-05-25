@@ -27,6 +27,9 @@ panns_data/
 # Claude Code project instructions
 .claude/
 
+# Dev-only test files — never commit
+dev/
+
 # Editor / IDE
 .vscode/
 .idea/

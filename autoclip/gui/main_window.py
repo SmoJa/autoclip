@@ -208,7 +208,19 @@ class AutoRecordTab(QWidget):
         self.game_widgets: dict = {}
         self._sections: list = []
 
-        self._layout = QVBoxLayout(self)
+        from PyQt6.QtWidgets import QScrollArea as _QSA
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = _QSA()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(_QSA.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        self._layout = QVBoxLayout(content)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
 
@@ -262,21 +274,16 @@ class AutoRecordTab(QWidget):
                         expanded=(i == 0),
                         header_widget=enable_cb
                     )
-                    section.toggled.connect(self._on_section_toggled)
-                    self._layout.addWidget(section, 0)
+                    self._layout.addWidget(section)
                     self._sections.append(section)
 
-            # Trailing spacer absorbs unused space when all sections are collapsed
-            self._layout.addStretch(0)
-            self._update_stretches()
+            self._layout.addStretch(1)
 
     def _on_section_toggled(self, _expanded: bool):
-        self._update_stretches()
+        pass
 
     def _update_stretches(self):
-        for s in self._sections:
-            self._layout.setStretch(self._layout.indexOf(s), 0)
-        self._layout.setStretch(self._layout.count() - 1, 1)
+        pass
 
 
 class RecordingTab(QWidget):
@@ -786,7 +793,19 @@ class AudioTriggersTab(QWidget):
         self._plugin_widgets = {}   # plugin_name → widget
         self._sections: list = []
 
-        self._layout = QVBoxLayout(self)
+        from PyQt6.QtWidgets import QScrollArea as _QSA
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = _QSA()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(_QSA.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content_w = QWidget()
+        scroll.setWidget(content_w)
+        self._layout = QVBoxLayout(content_w)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         t = _theme.current
@@ -818,7 +837,6 @@ class AudioTriggersTab(QWidget):
                 cl.setContentsMargins(16, 16, 16, 16)
                 cl.setSpacing(12)
                 cl.addWidget(widget)
-                cl.addStretch()
 
                 # Enable checkbox shown in the header even when collapsed
                 from PyQt6.QtWidgets import QCheckBox as _QCB
@@ -831,8 +849,7 @@ class AudioTriggersTab(QWidget):
 
                 section = CollapsibleSection(cls.NAME, content, expanded=False,
                                              header_widget=enable_cb)
-                section.toggled.connect(self._on_section_toggled)
-                self._layout.addWidget(section, 0)
+                self._layout.addWidget(section)
                 self._sections.append(section)
                 self._plugin_widgets[cls.NAME] = widget
 
@@ -843,14 +860,6 @@ class AudioTriggersTab(QWidget):
                     )
 
             self._layout.addStretch(1)
-
-    def _on_section_toggled(self, _expanded: bool):
-        self._update_stretches()
-
-    def _update_stretches(self):
-        for s in self._sections:
-            self._layout.setStretch(self._layout.indexOf(s), 0)
-        self._layout.setStretch(self._layout.count() - 1, 1)
 
     def _save_plugin(self, name: str):
         widget = self._plugin_widgets.get(name)

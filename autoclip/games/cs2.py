@@ -617,27 +617,25 @@ class CS2Tab:
         """Return a QWidget without importing Qt at module level."""
         from PyQt6.QtWidgets import (
             QWidget, QVBoxLayout, QGridLayout, QGroupBox,
-            QCheckBox, QLabel, QPushButton, QHBoxLayout, QScrollArea,
+            QCheckBox, QLabel, QPushButton, QHBoxLayout,
             QSpinBox, QAbstractSpinBox, QSizePolicy,
         )
-        from PyQt6.QtCore import Qt, QTimer
+        from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
         import threading
+
+        class _Sig(QObject):
+            result = pyqtSignal(object)
 
         w = QWidget(parent)
         w.config = config
-        outer = QVBoxLayout(w)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
+        layout = QVBoxLayout(w)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
         cs2 = config.cs2
 
-        w._enabled_cb = QCheckBox("Enable CS2 monitoring")
+        w._enabled_cb = QCheckBox("Enable CS2 monitoring", w)
         w._enabled_cb.setChecked(getattr(cs2, "enabled", True))
-        layout.addWidget(w._enabled_cb)
 
         # ── GSI Setup ────────────────────────────────────────────────
         gsi = QGroupBox("GSI Setup")
@@ -650,16 +648,44 @@ class CS2Tab:
         info.setWordWrap(True)
         info.setStyleSheet("color: #777; font-size: 12px;")
         gl.addWidget(info)
-        w.gsi_status = QLabel("Status: not checked")
+        w.gsi_status = QLabel("")
         w.gsi_status.setStyleSheet("color: #888; font-size: 12px;")
         gl.addWidget(w.gsi_status)
+        import os as _os
+        _gsi_file = None
+        for _p in [
+            _os.path.expanduser(
+                "~/.steam/steam/steamapps/common/"
+                "Counter-Strike Global Offensive/game/core/cfg/"
+                "gamestate_integration_autoclip.cfg"),
+            _os.path.expanduser(
+                "~/.local/share/Steam/steamapps/common/"
+                "Counter-Strike Global Offensive/game/core/cfg/"
+                "gamestate_integration_autoclip.cfg"),
+        ]:
+            if _os.path.isfile(_p):
+                _gsi_file = _p
+                break
+        if _gsi_file:
+            w.gsi_status.setText(f"✓ Installed to {_gsi_file}")
+            w.gsi_status.setStyleSheet("color: #00cc66; font-size: 12px;")
+        else:
+            w.gsi_status.setText("✗ Not installed")
+            w.gsi_status.setStyleSheet("color: #cc3300; font-size: 12px;")
         w.install_btn = QPushButton("INSTALL GSI CONFIG")
         w.install_btn.setObjectName("primary")
         gl.addWidget(w.install_btn)
 
         audio_row = QHBoxLayout()
-        w.audio_status = QLabel("Game audio: not resolved")
-        w.audio_status.setStyleSheet("color: #888; font-size: 11px;")
+        _saved_device = next(
+            (t.get("device", "") for t in (config.audio_tracks or [])
+             if isinstance(t, dict) and t.get("track_type") == "game"),
+            ""
+        )
+        w.audio_status = QLabel(f"✓ {_saved_device}" if _saved_device else "Game audio: not resolved")
+        w.audio_status.setStyleSheet(
+            "color: #00cc66; font-size: 11px;" if _saved_device else "color: #888; font-size: 11px;"
+        )
         resolve_btn = QPushButton("RESOLVE AUDIO")
         resolve_btn.setStyleSheet(
             "background:#1e2024;color:#d4d4d4;border:1px solid #2e3035;padding:5px 12px;")
@@ -670,24 +696,35 @@ class CS2Tab:
         def _resolve_audio():
             w.audio_status.setText("Resolving…")
             resolve_btn.setEnabled(False)
+            sig = _Sig(w)  # parent=w → main-thread affinity → emit cross-thread is queued
+
+            def _on_result(device):
+                resolve_btn.setEnabled(True)
+                if device:
+                    tracks = config.audio_tracks or []
+                    for track in tracks:
+                        if isinstance(track, dict) and track.get("track_type") == "game":
+                            track["device"] = device
+                            break
+                    config.save()
+                    w.audio_status.setText(f"✓ {device}")
+                    w.audio_status.setStyleSheet("color: #00cc66; font-size: 11px;")
+                else:
+                    w.audio_status.setText("✗ Not found — is CS2 running?")
+                    w.audio_status.setStyleSheet("color: #cc3300; font-size: 11px;")
+
+            sig.result.connect(_on_result)
+
             def _run():
-                from autoclip.core.audio import resolve_game_audio_node
-                device = resolve_game_audio_node("cs2", config.gpu_recorder_path)
-                def _done():
-                    resolve_btn.setEnabled(True)
-                    if device:
-                        tracks = config.audio_tracks or []
-                        for track in tracks:
-                            if isinstance(track, dict) and track.get("track_type") == "game":
-                                track["device"] = device
-                                break
-                        config.save()
-                        w.audio_status.setText(f"✓ {device}")
-                        w.audio_status.setStyleSheet("color: #00cc66; font-size: 11px;")
-                    else:
-                        w.audio_status.setText("✗ Not found — is CS2 running?")
-                        w.audio_status.setStyleSheet("color: #cc3300; font-size: 11px;")
-                QTimer.singleShot(0, _done)
+                import logging as _log
+                device = None
+                try:
+                    from autoclip.core.audio import resolve_game_audio_node
+                    device = resolve_game_audio_node("cs2", config.gpu_recorder_path)
+                except Exception:
+                    _log.getLogger(__name__).exception("resolve_game_audio_node failed")
+                sig.result.emit(device)
+
             threading.Thread(target=_run, daemon=True).start()
 
         resolve_btn.clicked.connect(_resolve_audio)
@@ -816,10 +853,4 @@ class CS2Tab:
         multikill_spin.valueChanged.connect(_save)
         lowhealth_spin.valueChanged.connect(_save)
 
-        scroll = QScrollArea()
-        scroll.setWidget(inner)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(scroll.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        outer.addWidget(scroll)
         return w

@@ -34,6 +34,12 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 ![Clip timeline](Screenshot_3.png?raw=true)
 *Player with timeline scrubber, event markers, and per-track waveforms*
 
+![Game triggers](Screenshot_4.png)
+*Game Triggers — CS2 kill, round, and situational trigger configuration*
+
+![Audio triggers](Screenshot_5.png)
+*Audio Triggers — Reactions (laughter, screaming, shouting) and Voice phrase detection*
+
 ![Settings](Screenshot_1.png)
 *Settings — recorder, audio tracks, encoding, and clip timing*
 
