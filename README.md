@@ -25,7 +25,8 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 
 ---
 
-## Screenshots
+<details>
+<summary>Screenshots</summary>
 
 ![Clip browser](Screenshot_2.png)
 *Clip browser — browse by game and date, preview thumbnails*
@@ -35,6 +36,8 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 
 ![Settings](Screenshot_1.png)
 *Settings — recorder, audio tracks, encoding, and clip timing*
+
+</details>
 
 ---
 
@@ -177,7 +180,8 @@ Contributions and bug reports are welcome.
 
 ---
 
-## Project layout
+<details>
+<summary>Project layout</summary>
 
 ```
 autoclip/
@@ -215,6 +219,8 @@ autoclip/
 scripts/
 └── export_audio_classifier.py    # One-time PANNs CNN6 → ONNX export
 ```
+
+</details>
 
 ---
 
