@@ -91,8 +91,9 @@ class AppController:
                 raw_data = raw.get(cls.NAME.lower(), {})
                 self.config.inject_audio_trigger_config(cls.NAME, cfg_cls, raw_data)
             trigger_name = cls.TRIGGER_NAME
-            def _make_audio_callback(n):
-                def _cb():
+            def _make_audio_callback(default_n):
+                def _cb(name=None):
+                    n   = name if name else default_n
                     ctx = (self._active_plugin.get_current_context()
                            if self._active_plugin else "")
                     self.clip_trigger.trigger(n + ctx)
@@ -101,6 +102,8 @@ class AppController:
             self._audio_trigger_plugins.append(plugin)
             if cls.TRIGGER_NAME and cls.TRIGGER_LOG_STYLE:
                 self.trigger_log_style[cls.TRIGGER_NAME] = cls.TRIGGER_LOG_STYLE
+            for tname, tstyle in cls.TRIGGER_LOG_STYLES.items():
+                self.trigger_log_style[tname] = tstyle
         logger.info(f"Loaded {len(self._audio_trigger_plugins)} audio trigger plugin(s): "
                     f"{[p.NAME for p in self._audio_trigger_plugins]}")
 

@@ -16,6 +16,20 @@ from PyQt6.QtGui import QSurfaceFormat
 
 logger = logging.getLogger(__name__)
 
+# Video tone-mapping segment for lavfi-complex — applied for HDR clips.
+# [vid1] = mpv's first video stream input, [vo] = video output.
+# Clips at 100 nits: anything brighter (flashbangs, sky) maps to white.
+# setparams tags the output BT.709 so mpv won't double-tone-map.
+_HDR_VF = (
+    "[vid1]zscale=t=linear:npl=80,"
+    "format=gbrpf32le,"
+    "zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,"
+    "zscale=t=bt709:m=bt709:r=tv,"
+    "format=yuv420p,"
+    "setparams=color_trc=bt709:colorspace=bt709:color_primaries=bt709[vo]"
+)
+
 
 def _set_default_format():
     """Set a permissive OpenGL format that works with NVIDIA on Wayland."""
@@ -35,7 +49,8 @@ class MpvWidget(QOpenGLWidget):
     duration_ready   = pyqtSignal(float)
     position_changed = pyqtSignal(float)
     playback_ended   = pyqtSignal()
-    _update_requested = pyqtSignal()
+    _update_requested  = pyqtSignal()
+    _refresh_frame_sig = pyqtSignal()
 
     def __init__(self, parent=None):
         _set_default_format()
@@ -45,6 +60,8 @@ class MpvWidget(QOpenGLWidget):
         self._duration = 0.0
         self._ready = False
         self._pending_path: Optional[Path] = None
+        self._pending_is_hdr: bool = False
+        self._is_hdr: bool = False
         # Audio state — initialized here so set_audio_tracks() before GL ready works
         self._n_audio_tracks = 1
         self._track_volumes  = [1.0]
@@ -54,6 +71,7 @@ class MpvWidget(QOpenGLWidget):
         self.setMinimumHeight(200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._update_requested.connect(self._qt_update, Qt.ConnectionType.QueuedConnection)
+        self._refresh_frame_sig.connect(self._refresh_frame, Qt.ConnectionType.QueuedConnection)
 
     # ------------------------------------------------------------------ #
     #  OpenGL lifecycle                                                    #
@@ -75,6 +93,7 @@ class MpvWidget(QOpenGLWidget):
                 msg_level="all=warn",
                 hr_seek="yes",
                 force_seekable=True,
+                tone_mapping="clip",
                 demuxer_lavf_o="fflags=+genpts+igndts,analyzeduration=20000000,probesize=50000000",
             )
             # Note: _n_audio_tracks, _track_volumes, _track_mutes, _pending_audio
@@ -98,6 +117,8 @@ class MpvWidget(QOpenGLWidget):
                         logger.info("Applying audio filter on duration ready")
                         self._apply_audio_filter()
                     self._pending_audio = False
+                    # Refresh first frame so HDR tone-mapping pipeline is applied
+                    self._refresh_frame_sig.emit()
 
             @self._mpv.event_callback("end-file")
             def _on_end(event):
@@ -135,14 +156,16 @@ class MpvWidget(QOpenGLWidget):
             self._render_timer.timeout.connect(self._force_repaint)
             self._render_timer.start()
 
-            # Load pending file
+            # Load pending file — deferred so initializeGL fully returns first.
+            # Playing inside initializeGL (before Qt finishes GL setup) causes
+            # the first render to show garbled frames; deferring to the next
+            # event loop tick avoids that race.
             logger.info(f"GL ready — pending={self._pending_path}")
             if self._pending_path:
-                self._mpv.pause = True
-                self._mpv.play(str(self._pending_path))
-                self._mpv.pause = True
+                path = self._pending_path
                 self._pending_path = None
-                logger.info("Pending path played")
+                QTimer.singleShot(0, lambda p=path: self._play_pending(p))
+                logger.info("Pending path deferred")
 
         except Exception as e:
             logger.error(f"mpv GL init failed: {e}")
@@ -218,7 +241,13 @@ class MpvWidget(QOpenGLWidget):
             return
         n = self._n_audio_tracks
         if n <= 1:
-            # Single track — just use volume
+            # Clear any stale multi-track lavfi-complex from the previous clip —
+            # if left active it references aid2/aid3 that don't exist in single-track
+            # files, causing mpv to silently fail to load the file entirely.
+            try:
+                self._mpv["lavfi-complex"] = ""
+            except Exception:
+                pass
             vol = 0.0 if self._track_mutes[0] else self._track_volumes[0]
             try:
                 self._mpv.volume = vol * 100
@@ -242,18 +271,34 @@ class MpvWidget(QOpenGLWidget):
         except Exception as e:
             logger.warning(f"lavfi filter failed: {e}")
 
-    def load(self, path: Path):
+    def _play_pending(self, path):
+        if not (self._ready and self._mpv):
+            return
+        try:
+            self._is_hdr = self._pending_is_hdr
+            self._apply_audio_filter()
+            self._mpv.pause = True
+            self._mpv.play(str(path))
+            self._mpv.pause = True
+            logger.info(f"Pending path played: {path}")
+        except Exception as e:
+            logger.error(f"Pending play failed: {e}")
+
+    def load(self, path: Path, is_hdr: bool = False):
         self._duration = 0.0
-        logger.info(f"Player.load called: ready={self._ready} path={path}")
+        self._is_hdr = is_hdr
+        self._pending_is_hdr = is_hdr
+        logger.info(f"Player.load called: ready={self._ready} path={path} is_hdr={is_hdr}")
         if not self._ready:
             self._pending_path = path
             logger.info("mpv not ready, queuing path")
             return
         logger.info(f"Calling mpv.play: {path}")
         try:
-            self._mpv.pause = True  # ensure paused before loading
+            self._apply_audio_filter()
+            self._mpv.pause = True
             self._mpv.play(str(path))
-            self._mpv.pause = True  # re-assert after play() in case mpv resets it
+            self._mpv.pause = True
             logger.info("mpv.play() called OK")
         except Exception as e:
             logger.error(f"mpv play: {e}")
@@ -284,12 +329,30 @@ class MpvWidget(QOpenGLWidget):
         if self._duration > 0:
             self.seek(norm * self._duration)
 
+    def frame_step(self, forward: bool = True):
+        if self._ready and self._mpv:
+            try:
+                self._mpv.command("frame-step" if forward else "frame-back-step")
+            except Exception:
+                pass
+
     def stop(self):
         if self._ready and self._mpv:
             try:
                 self._mpv.stop()
             except Exception:
                 pass
+
+    def _refresh_frame(self):
+        """Step forward+back to force mpv to re-render the current frame.
+        Called via signal after file load so HDR tone-mapping is fully initialized."""
+        if not (self._ready and self._mpv):
+            return
+        try:
+            self._mpv.command("frame-step")
+            self._mpv.command("frame-back-step")
+        except Exception:
+            pass
 
     def _force_repaint(self):
         if self._ready and self._ctx and self._ctx.update():
@@ -333,7 +396,7 @@ class MpvPlayer:
         if on_duration:  widget.duration_ready.connect(on_duration)
         if on_end:       widget.playback_ended.connect(on_end)
 
-    def load(self, path):            self._widget.load(path)
+    def load(self, path, is_hdr=False): self._widget.load(path, is_hdr)
     def set_audio_tracks(self, n, volumes=None, mutes=None):
         self._widget.set_audio_tracks(n, volumes, mutes)
     def set_track_volume(self, idx, volume): self._widget.set_track_volume(idx, volume)
@@ -342,4 +405,5 @@ class MpvPlayer:
     def pause(self):                 self._widget.pause()
     def seek(self, secs):            self._widget.seek(secs)
     def seek_norm(self, norm):       self._widget.seek_norm(norm)
+    def frame_step(self, forward=True): self._widget.frame_step(forward)
     def stop(self):                  self._widget.stop()

@@ -1,6 +1,6 @@
 # AutoClip
 
-Automatic game clip recorder for Linux. Monitors game events in real time and triggers [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) to save a replay-buffer clip the moment something clip-worthy happens — kills, clutches, laughter, or a manual hotkey.
+Automatic game clip recorder for Linux. Monitors game events in real time and triggers [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) to save a replay-buffer clip the moment something clip-worthy happens — kills, clutches, vocal reactions, spoken phrases, or a manual hotkey.
 
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey)
@@ -13,10 +13,13 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 ## Features
 
 - **Automatic game triggers** — CS2 kills, headshots, multi-kills, clutches, and bomb events via Game State Integration (GSI). Zero anti-cheat risk — GSI is an official Valve feature.
-- **Audio triggers** — ML-based laughter detection (PANNs CNN6, local inference) monitors your mic and chat audio simultaneously. New audio triggers can be added as plugins.
+- **Audio triggers** — two built-in triggers monitor your mic and chat audio simultaneously:
+  - **Reactions** — detects laughter, screaming, and shouting via PANNs CNN6 (local ML inference). Each reaction type has independent sensitivity and cooldown settings.
+  - **Voice phrases** — saves a clip when you say a configured phrase (e.g. "clip that"). Uses Vosk offline speech recognition — no cloud, no API key.
+  - New triggers can be added as single-file plugins.
 - **Manual hotkey** — save a clip at any time with `Ctrl+Shift+S` (configurable).
-- **Clip browser** — browse, preview, trim, and export clips with a built-in player, timeline scrubber, and per-track waveforms.
-- **Multi-track audio** — record game audio, mic, and chat as separate tracks; mix down on export.
+- **Clip browser** — browse, preview, trim, and export clips with a built-in player. The timeline shows stacked per-track waveforms with per-track volume dials, frame-step controls, and set-in/set-out buttons.
+- **Multi-track audio** — record game audio, mic, and chat as separate tracks; adjust per-track volume in the timeline; mix down on export.
 - **Clip metadata** — events, map, round, team, and score are encoded in the filename so clips are self-describing.
 - **Extensible** — adding a new game or audio trigger is a single new file. See [Adding a new game](#adding-a-new-game) below.
 
@@ -67,9 +70,10 @@ pip install -r autoclip/requirements.txt
 | pynput | Global hotkey |
 | sounddevice | Microphone/monitor capture for audio triggers |
 | numpy | Audio processing |
-| onnxruntime | ML inference for laughter detection |
+| onnxruntime | ML inference for Reactions trigger |
 | requests | GSI HTTP server |
 | send2trash | Trash clips from the browser (optional, falls back to permanent delete) |
+| vosk | Offline speech recognition for Voice trigger (optional) |
 
 > **Hotkey note:** `pynput` requires your user to be in the `input` group:
 > ```bash
@@ -77,11 +81,12 @@ pip install -r autoclip/requirements.txt
 > # log out and back in
 > ```
 
-### Laughter detection model (optional)
+### Audio trigger models (optional)
 
-The laughter detection model is downloaded automatically the first time you enable it in **Settings → Audio Triggers → Laughter**. No extra steps needed.
+Both audio trigger models are downloaded automatically the first time you enable them in Settings — no extra steps needed.
 
-If you prefer to generate the model file yourself (e.g. to verify it), you can run the export script — see `scripts/export_audio_classifier.py` for instructions.
+- **Reactions** — uses PANNs CNN6 (~25 MB ONNX). Downloaded via **Settings → Audio Triggers → Reactions**. If you prefer to generate the model file yourself, see `scripts/export_audio_classifier.py`.
+- **Voice phrases** — uses the Vosk small English model (~40 MB). Downloaded via **Settings → Audio Triggers → Voice**.
 
 ---
 
@@ -124,7 +129,7 @@ To enable autostart on login, use the toggle in **Settings → Application**.
 ```
 CS2 (GSI HTTP) ──► cs2.py ──► controller.py ──► clip_trigger.py ──► gpu-screen-recorder
                                     ▲
-                   laughter.py ─────┘  (audio trigger, same pipeline)
+         reactions.py / voice.py ─┘  (audio triggers, same pipeline)
 ```
 
 - gpu-screen-recorder runs a **replay buffer** — the last N seconds of video/audio are held in RAM at near-zero CPU cost.
@@ -153,7 +158,7 @@ Create `autoclip/games/mygame.py` with a class inheriting `GamePlugin`. Set `NAM
 
 ## Adding a new audio trigger
 
-Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Set `NAME`, `TRIGGER_NAME`, and implement `start()` / `stop()`. See `audio_triggers/base.py` and `audio_triggers/laughter.py` as a reference.
+Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Set `NAME`, `TRIGGER_NAME`, and implement `start()` / `stop()`. See `audio_triggers/base.py` for the full interface and `audio_triggers/reactions.py` or `audio_triggers/voice.py` as references.
 
 ---
 
@@ -161,10 +166,10 @@ Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Se
 
 AutoClip is in early release. The following areas have not been thoroughly tested and may have rough edges:
 
-- **Laughter detection** — the ML trigger is implemented and functional but has not been extensively tested in real gameplay sessions. Sensitivity defaults may need tuning per setup.
+- **Reactions and Voice triggers** — implemented and functional but not extensively tested in real gameplay sessions. Sensitivity defaults and phrase detection accuracy may need tuning per setup.
 - **AMD and Intel GPUs** — codec and hardware detection is implemented for AMD and Intel but has only been tested on NVIDIA. Encoding settings may need manual adjustment.
-- **HDR recording** — the HDR codec path exists but is untested.
-- **Plugin architecture** — the game and audio trigger plugin systems are designed for extensibility but have not been tested with anything beyond the built-in CS2 and laughter plugins. There may be rough edges when adding new ones.
+- **HDR recording** — the HDR codec path exists but is untested. HDR clip previews in the player may show highlights as slightly grey rather than pure white; exports are unaffected.
+- **Plugin architecture** — the game and audio trigger plugin systems are designed for extensibility but have only been tested with the built-in plugins. There may be rough edges when adding new ones.
 - **Non-KDE desktop environments** — developed and tested on KDE Plasma. GNOME, Hyprland, and other compositors should work but autostart and desktop launcher integration is untested.
 - **Non-Nobara/Fedora systems** — only tested on Nobara Linux. Other distros should work but may require additional setup.
 - **Native Wayland** — AutoClip runs under XWayland. Native Wayland rendering is not currently supported.
@@ -196,16 +201,17 @@ autoclip/
 ├── audio_triggers/
 │   ├── base.py                    # AudioTriggerPlugin interface
 │   ├── registry.py                # Auto-discovery
-│   └── laughter.py                # PANNs CNN6 laughter detector
+│   ├── reactions.py               # PANNs CNN6 laughter/screaming/shouting detector
+│   └── voice.py                   # Vosk offline voice phrase trigger
 └── gui/
     ├── main_window.py             # Main window, Dashboard, Settings tabs
     ├── clips_tab.py               # Clip browser and player
     ├── player.py                  # Embedded mpv (OpenGL)
-    ├── timeline.py                # Seek bar and event markers
-    ├── track_waveforms.py         # Per-track waveform display
+    ├── timeline.py                # Seek bar, event marker pills, stacked per-track waveforms
+    ├── track_waveforms.py         # Per-track waveform extraction (QObject, background thread)
     ├── audio_tracks.py            # Audio track configuration widget
     ├── theme.py                   # Theme system
-    └── widgets.py                 # Shared small widgets
+    └── widgets.py                 # Shared small widgets (VolumeDial, NoScroll* variants)
 scripts/
 └── export_audio_classifier.py    # One-time PANNs CNN6 → ONNX export
 ```

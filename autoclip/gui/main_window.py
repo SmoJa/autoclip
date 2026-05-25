@@ -954,9 +954,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.rec_tab, "SETTINGS")
         root.addWidget(self.tabs, 1)
 
-        self.status_bar = StatusBar()
-        root.addWidget(self.status_bar)
-
         cs2_tab = self._game_tabs.get("CS2")
         if cs2_tab and hasattr(cs2_tab, "install_btn"):
             cs2_tab.install_btn.clicked.connect(self._install_gsi)
@@ -1067,7 +1064,6 @@ class MainWindow(QMainWindow):
         self._prev_tab_index = new_index
 
     def _on_status(self, s: str):
-        self.status_bar.set_status(s, self._current_game or "")
         recording = s.lower() in ("running", "recording")
         t = _theme.current
         self._rec_dot.setStyleSheet(
@@ -1084,7 +1080,6 @@ class MainWindow(QMainWindow):
             self._game_name_lbl.setStyleSheet(
                 f"color:{t.success}; font-size:11px; margin-right:16px;")
             self._game_name_lbl.setText(self._current_game)
-            self.status_bar.set_status("recording", self._current_game)
             self.event_log.add_system(f"Game started: {self._current_game}")
         elif e == "game_closed":
             self._current_game = None

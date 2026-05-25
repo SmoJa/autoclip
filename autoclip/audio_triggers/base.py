@@ -53,6 +53,10 @@ class AudioTriggerPlugin:
     # Leave empty to use default event log styling.
     TRIGGER_LOG_STYLE: tuple = ()
 
+    # Optional: {trigger_name: (display, color, bg, bold)} for plugins that
+    # fire multiple distinct trigger names via on_trigger(name).
+    TRIGGER_LOG_STYLES: dict = {}
+
     def __init__(self, config: Any, on_trigger: Callable[[], None]):
         """
         config     — the global AutoClip Config object. Access plugin-specific

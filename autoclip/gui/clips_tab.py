@@ -21,12 +21,29 @@ from PyQt6.QtCore import QPoint
 
 from ..core.clips import (
     Clip, scan_library, probe_clips_async,
-    rename_clip, convert_to_sdr, trim_clip, extract_waveform, export_clip,
+    rename_clip, convert_to_sdr, trim_clip, export_clip,
+    probe_hdr_peak as _probe_hdr_peak,
 )
 from .timeline import TimelineWidget
 from .player import MpvWidget, MpvPlayer
 from .track_waveforms import MultiTrackWaveform
 from . import theme as _theme
+
+_WEAPON_NAMES = {
+    "ak47": "AK-47", "awp": "AWP", "m4a1": "M4A1", "m4a1_silencer": "M4A1-S",
+    "usp_silencer": "USP-S", "hkp2000": "P2000", "glock": "Glock-18",
+    "deagle": "Desert Eagle", "p250": "P250", "tec9": "Tec-9",
+    "fiveseven": "Five-SeveN", "cz75a": "CZ75-Auto", "revolver": "R8 Revolver",
+    "mac10": "MAC-10", "mp5sd": "MP5-SD", "mp7": "MP7", "mp9": "MP9",
+    "ump45": "UMP-45", "p90": "P90", "bizon": "PP-Bizon",
+    "famas": "FAMAS", "galil": "Galil AR", "aug": "AUG", "sg556": "SG 553",
+    "scar20": "SCAR-20", "g3sg1": "G3SG1", "ssg08": "SSG 08",
+    "nova": "Nova", "xm1014": "XM1014", "sawedoff": "Sawed-Off",
+    "mag7": "MAG-7", "m249": "M249", "negev": "Negev",
+    "hegrenade": "HE Grenade", "molotov": "Molotov", "incgrenade": "Incendiary",
+    "flashbang": "Flashbang", "smokegrenade": "Smoke",
+    "knife_t": "Knife", "bayonet": "Bayonet",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +84,7 @@ def _thumb_hashes(clip_path: Path, duration: float = 0.0,
     result = set()
     for seek in seeks:
         for hdr in (True, False):
-            key = f"{clip_path}@{seek}@{CARD_W}@{'hdr' if hdr else 'sdr'}"
+            key = f"{clip_path}@{seek}@{CARD_W}x{CARD_H}@{'hdr' if hdr else 'sdr'}"
             result.add(hashlib.md5(key.encode()).hexdigest())
     return result
 
@@ -97,21 +114,27 @@ def _purge_unused_thumbnails(clips: list) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _get_thumbnail(clip_path: Path, size: int = 120,
+def _get_thumbnail(clip_path: Path, w: int = None, h: int = None,
                    event_offset: int = -1,
                    is_hdr: bool = False) -> Optional["QPixmap"]:
     """
     Return cached thumbnail QPixmap at the trigger event frame.
+    Generated at exactly w×h using scale-to-fill + crop so Qt never upscales.
     event_offset: seconds from clip start to trigger (-1 = use 1s fallback).
     is_hdr: apply tone-mapping only if clip is actually HDR.
     """
     from PyQt6.QtGui import QPixmap as _QPixmap
     import hashlib, subprocess
+    if w is None: w = CARD_W
+    if h is None: h = CARD_H
     seek = max(0, event_offset) if event_offset >= 0 else 1
-    cache_key = f"{clip_path}@{seek}@{size}@{'hdr' if is_hdr else 'sdr'}"
+    cache_key = f"{clip_path}@{seek}@{w}x{h}@{'hdr' if is_hdr else 'sdr'}"
     key = hashlib.md5(cache_key.encode()).hexdigest()
     thumb_path = _THUMB_DIR / f"{key}.jpg"
     if not thumb_path.exists():
+        # Scale to fill w×h (upscaling whichever dimension is short) then crop
+        # to exact size. This avoids Qt ever needing to upscale the pixmap.
+        crop = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
         try:
             if is_hdr:
                 vf = (
@@ -121,10 +144,10 @@ def _get_thumbnail(clip_path: Path, size: int = 120,
                     f"tonemap=tonemap=hable:desat=0,"
                     f"zscale=t=bt709:m=bt709:r=tv,"
                     f"format=yuv420p,"
-                    f"scale={size}:-1"
+                    f"{crop}"
                 )
             else:
-                vf = f"scale={size}:-1"
+                vf = crop
 
             result = subprocess.run([
                 "ffmpeg", "-v", "error",
@@ -132,7 +155,7 @@ def _get_thumbnail(clip_path: Path, size: int = 120,
                 "-i", str(clip_path),
                 "-vframes", "1",
                 "-vf", vf,
-                "-q:v", "3",
+                "-q:v", "2",
                 str(thumb_path)
             ], timeout=10, capture_output=True)
 
@@ -140,15 +163,15 @@ def _get_thumbnail(clip_path: Path, size: int = 120,
                 err = result.stderr.decode(errors="replace").strip()
                 logger.warning(f"Thumbnail failed for {clip_path.name} seek={seek}: {err or 'no output'}")
 
-            # Fallback to plain scale if HDR filter failed
+            # Fallback to plain scale+crop if HDR tone-map failed
             if is_hdr and (result.returncode != 0 or not thumb_path.exists()):
                 subprocess.run([
                     "ffmpeg", "-v", "error",
                     "-ss", str(seek),
                     "-i", str(clip_path),
                     "-vframes", "1",
-                    "-vf", f"scale={size}:-1",
-                    "-q:v", "3",
+                    "-vf", crop,
+                    "-q:v", "2",
                     str(thumb_path)
                 ], timeout=10, capture_output=True)
         except Exception as e:
@@ -312,23 +335,20 @@ class IconCard(QWidget):
                 effective_dur = dur if dur > 0 else 30.0
                 seek_sec = max(1, effective_dur - post) if post >= 0 else -1
                 actual_seek = int(seek_sec) if seek_sec >= 0 else 1
-                cache_key = f"{data.path}@{actual_seek}@{CARD_W}@{'hdr' if is_hdr else 'sdr'}"
+                cache_key = f"{data.path}@{actual_seek}@{CARD_W}x{CARD_H}@{'hdr' if is_hdr else 'sdr'}"
                 cached = _THUMB_DIR / f"{hashlib.md5(cache_key.encode()).hexdigest()}.jpg"
                 if cached.exists():
                     # Already cached — set immediately, no spinner needed
                     from PyQt6.QtGui import QPixmap as _QP
                     pm = _QP(str(cached))
                     if not pm.isNull():
-                        self._icon.setPixmap(pm.scaled(
-                            CARD_W, CARD_H,
-                            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                            Qt.TransformationMode.SmoothTransformation))
+                        self._icon.setPixmap(pm)
                 else:
                     self._spinner = _Spinner(32, self)
                     self._spinner.move(8 + (CARD_W - 32) // 2, 8 + (CARD_H - 32) // 2)
                     self._spinner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                     def _load(p=data.path, s=seek_sec, hdr=is_hdr):
-                        pm = _get_thumbnail(p, size=CARD_W, event_offset=int(s), is_hdr=hdr)
+                        pm = _get_thumbnail(p, w=CARD_W, h=CARD_H, event_offset=int(s), is_hdr=hdr)
                         self._thumb_ready.emit(pm)  # always emit so spinner is cleared
                     _thumb_queue.put(_load)
 
@@ -494,10 +514,7 @@ class IconCard(QWidget):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation))
             else:
-                self._icon.setPixmap(pm.scaled(
-                    CARD_W, CARD_H,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation))
+                self._icon.setPixmap(pm)
         if hasattr(self, "_spinner"):
             self._spinner.stop()
             self._spinner.hide()
@@ -1398,7 +1415,6 @@ class PlayerView(QWidget):
     back_requested  = pyqtSignal()
     export_done     = pyqtSignal()
     # Internal signals for thread-safe UI updates
-    _waveform_ready = pyqtSignal(object)   # np.ndarray
     _export_status  = pyqtSignal(str)      # status message
     _export_done_s  = pyqtSignal(bool, object)  # success, Path
 
@@ -1434,12 +1450,25 @@ class PlayerView(QWidget):
         self._info_lbl = QLabel("")
         self._info_lbl.setStyleSheet(f"color:{_pv.text_dim};font-size:11px;")
 
+        self._hdr_warn_lbl = QLabel("⚠  HDR Preview")
+        self._hdr_warn_lbl.setStyleSheet(
+            f"color:{_pv.warning}; font-size:11px; font-weight:bold;"
+            f"border:1px solid {_pv.warning}; border-radius:3px; padding:2px 8px;"
+        )
+        self._hdr_warn_lbl.setToolTip(
+            "HDR clips do not preview accurately in this player.\n"
+            "Super bright scenes and flashbangs may appear grey instead of white.\n"
+            "Exports and raw files are unaffected."
+        )
+        self._hdr_warn_lbl.hide()
+
         tl.addWidget(self._back_btn)
         tl.addSpacing(16)
         tl.addWidget(self._title_lbl)
         tl.addSpacing(12)
         tl.addWidget(self._info_lbl)
         tl.addStretch()
+        tl.addWidget(self._hdr_warn_lbl)
         layout.addWidget(topbar)
 
         # libmpv OpenGL video widget
@@ -1487,6 +1516,27 @@ class PlayerView(QWidget):
         self._play_btn.clicked.connect(self._toggle_play)
         self._play_btn.setEnabled(False)
 
+        _frame_step_style = (
+            f"QPushButton{{background:{_pv.bg_raised};color:{_pv.text};"
+            f"border:1px solid {_pv.border};border-radius:4px;"
+            f"padding:6px 6px;font-size:13px;}}"
+            f"QPushButton:hover{{background:{_pv.bg_overlay};}}"
+            f"QPushButton:disabled{{color:{_pv.text_faint};border-color:{_pv.border};}}"
+        )
+        self._frame_prev_btn = QPushButton("◀")
+        self._frame_prev_btn.setFixedWidth(34)
+        self._frame_prev_btn.setEnabled(False)
+        self._frame_prev_btn.setStyleSheet(_frame_step_style)
+        self._frame_prev_btn.setToolTip("Previous frame")
+        self._frame_prev_btn.clicked.connect(lambda: self._frame_step(False))
+
+        self._frame_next_btn = QPushButton("▶")
+        self._frame_next_btn.setFixedWidth(34)
+        self._frame_next_btn.setEnabled(False)
+        self._frame_next_btn.setStyleSheet(_frame_step_style)
+        self._frame_next_btn.setToolTip("Next frame")
+        self._frame_next_btn.clicked.connect(lambda: self._frame_step(True))
+
         self._pos_lbl = QLabel("0:00 / 0:00")
         self._pos_lbl.setStyleSheet(f"color:{_pv.text_dim};font-size:11px;min-width:140px;")
 
@@ -1502,8 +1552,28 @@ class PlayerView(QWidget):
         )
         self._markers_toggle.toggled.connect(self._on_markers_toggled)
 
+        _inout_btn_style = (
+            f"QPushButton{{background:{_pv.bg_raised};color:{_pv.text_dim};"
+            f"border:1px solid {_pv.border};border-radius:3px;"
+            f"padding:3px 6px;font-size:10px;}}"
+            f"QPushButton:hover{{background:{_pv.bg_overlay};color:{_pv.text};}}"
+            f"QPushButton:disabled{{color:{_pv.text_faint};border-color:{_pv.border};}}"
+        )
+        self._set_in_btn = QPushButton("Set In")
+        self._set_in_btn.setEnabled(False)
+        self._set_in_btn.setStyleSheet(_inout_btn_style)
+        self._set_in_btn.setToolTip("Set in point to current playhead position")
+        self._set_in_btn.clicked.connect(self._set_in_here)
+
         self._in_lbl  = QLabel("In: 0.0s")
         self._in_lbl.setStyleSheet(f"color:{_pv.handle_in};font-size:11px;")
+
+        self._set_out_btn = QPushButton("Set Out")
+        self._set_out_btn.setEnabled(False)
+        self._set_out_btn.setStyleSheet(_inout_btn_style)
+        self._set_out_btn.setToolTip("Set out point to current playhead position")
+        self._set_out_btn.clicked.connect(self._set_out_here)
+
         self._out_lbl = QLabel("Out: 0.0s")
         self._out_lbl.setStyleSheet(f"color:{_pv.handle_out};font-size:11px;")
 
@@ -1528,6 +1598,10 @@ class PlayerView(QWidget):
         self._status_lbl.setStyleSheet(f"color:{_pv.text_dim};font-size:11px;")
 
         pb_row.addWidget(self._play_btn)
+        pb_row.addSpacing(4)
+        pb_row.addWidget(self._frame_prev_btn)
+        pb_row.addSpacing(2)
+        pb_row.addWidget(self._frame_next_btn)
         pb_row.addSpacing(12)
         pb_row.addWidget(self._pos_lbl)
         pb_row.addSpacing(8)
@@ -1535,8 +1609,12 @@ class PlayerView(QWidget):
         pb_row.addStretch()
         pb_row.addWidget(self._status_lbl)
         pb_row.addSpacing(8)
+        pb_row.addWidget(self._set_in_btn)
+        pb_row.addSpacing(4)
         pb_row.addWidget(self._in_lbl)
         pb_row.addSpacing(8)
+        pb_row.addWidget(self._set_out_btn)
+        pb_row.addSpacing(4)
         pb_row.addWidget(self._out_lbl)
         pb_row.addSpacing(16)
         pb_row.addWidget(self._export_btn)
@@ -1551,12 +1629,13 @@ class PlayerView(QWidget):
         self._timeline.out_point_changed.connect(self._on_out_changed)
         cl.addWidget(self._timeline)
 
-        # Multi-track waveform display — now gets full remaining height
-        self._track_waveforms = MultiTrackWaveform()
-        self._track_waveforms.track_volume_changed.connect(self._on_track_volume)
-        self._track_waveforms.track_mute_changed.connect(self._on_track_mute)
+        # Data provider — not added to layout (no visible UI)
+        self._track_waveforms = MultiTrackWaveform(self)
         self._track_waveforms.tracks_probed.connect(self._on_tracks_probed)
-        cl.addWidget(self._track_waveforms)
+        self._track_waveforms.waveform_ready.connect(self._on_track_waveform)
+
+        self._timeline.track_volume_changed.connect(self._on_track_volume)
+        self._timeline.track_mute_changed.connect(self._on_track_mute)
 
         layout.addWidget(controls)
 
@@ -1566,8 +1645,6 @@ class PlayerView(QWidget):
         self._pos_timer.timeout.connect(self._check_outpoint)
         self._pos_timer.start()
 
-        # Connect internal thread-safe signals
-        self._waveform_ready.connect(self._timeline.set_waveform)
         self._export_status.connect(self._status_lbl.setText)
         self._export_done_s.connect(self._on_export_done)
 
@@ -1582,6 +1659,7 @@ class PlayerView(QWidget):
             f"{clip.game}  ·  {clip.date}  ·  {clip.duration_str}  ·  "
             f"{clip.size_mb:.1f} MB  ·  {'HDR' if clip.is_hdr else 'SDR'}"
         )
+        self._hdr_warn_lbl.setVisible(clip.is_hdr)
         self._suggested_name = clip.suggested_export_name
         # Probe clip for HDR/duration if not yet done
         import threading as _t
@@ -1596,7 +1674,8 @@ class PlayerView(QWidget):
         self._timeline.set_in(0.0)
         self._timeline.set_out(1.0)
         self._timeline.set_position(0.0)
-        self._timeline.set_waveform(__import__("numpy").zeros(800))
+        self._timeline.clear_waveforms()
+        self._timeline.clear_track_controls()
         self._update_in_out_labels()
 
         # Set event marker — will be refined when real duration arrives
@@ -1620,16 +1699,8 @@ class PlayerView(QWidget):
         tracks = getattr(self._config, "audio_tracks", None) or []
         self._track_waveforms.load_tracks(tracks, clip.path)
 
-        self._player.load(clip.path)
+        self._player.load(clip.path, is_hdr=clip.is_hdr)
         self._pos_timer.start()
-
-        # Extract waveform in background
-        threading.Thread(target=self._extract_waveform, daemon=True).start()
-
-    def _extract_waveform(self):
-        if self._clip:
-            samples = extract_waveform(self._clip.path)
-            self._waveform_ready.emit(samples)
 
     def _on_markers_toggled(self, checked: bool):
         if checked:
@@ -1698,6 +1769,10 @@ class PlayerView(QWidget):
         clip = self._clip  # capture now — may change by the time _f runs
         def _f():
             self._play_btn.setEnabled(True)
+            self._frame_prev_btn.setEnabled(True)
+            self._frame_next_btn.setEnabled(True)
+            self._set_in_btn.setEnabled(True)
+            self._set_out_btn.setEnabled(True)
             self._export_btn.setEnabled(True)
             self._delete_btn.setEnabled(True)
             self._status_lbl.setText("")
@@ -1706,17 +1781,33 @@ class PlayerView(QWidget):
             self._update_play_btn()
             # Set marker using real duration — position = duration - post_event
             if clip and clip.events and dur > 0:
+                from ..core import metadata as _meta
                 markers = []
                 for ev in clip.events:
                     trigger_sec = max(0.0, dur - ev.secs_from_end)
                     norm = min(1.0, trigger_sec / dur)
+                    # Short label (compact, shown by default)
                     label = ev.trigger
                     if ev.weapon:
                         label = f"{ev.trigger} {ev.weapon}"
+                    # Full label (beautified, shown on hover)
+                    disp = _meta.TRIGGER_DISPLAY.get(
+                        ev.trigger,
+                        ev.trigger.replace("_", " ").title()
+                    )
+                    if ev.weapon:
+                        weapon_disp = _WEAPON_NAMES.get(
+                            ev.weapon,
+                            ev.weapon.replace("_", " ").title()
+                        )
+                        full_label = f"{disp} {weapon_disp}"
+                    else:
+                        full_label = disp
                     markers.append({
-                        "norm":    norm,
-                        "label":   label,
-                        "trigger": ev.trigger,
+                        "norm":       norm,
+                        "label":      label,
+                        "full_label": full_label,
+                        "trigger":    ev.trigger,
                     })
                 self._current_markers = markers
                 if self._markers_toggle.isChecked():
@@ -1798,6 +1889,20 @@ class PlayerView(QWidget):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def _frame_step(self, forward: bool):
+        if self._player:
+            self._player.frame_step(forward)
+
+    def _set_in_here(self):
+        pos = self._timeline._pos
+        self._timeline.set_in(pos)
+        self._update_in_out_labels()
+
+    def _set_out_here(self):
+        pos = self._timeline._pos
+        self._timeline.set_out(pos)
+        self._update_in_out_labels()
 
     def _on_seek(self, norm: float):
         import time
@@ -1900,9 +2005,13 @@ class PlayerView(QWidget):
         )
         dlg.exec()
 
-    def _on_tracks_probed(self, n_tracks: int, volumes: list, mutes: list):
+    def _on_tracks_probed(self, n_tracks: int, volumes: list, mutes: list, colors: list):
         if self._player:
             self._player.set_audio_tracks(n_tracks, volumes, mutes)
+        self._timeline.setup_track_controls(n_tracks, volumes, mutes, colors)
+
+    def _on_track_waveform(self, idx: int, samples, color: str):
+        QTimer.singleShot(0, lambda: self._timeline.set_track_waveform(idx, samples, color))
 
     def _on_track_volume(self, track_idx: int, volume: float):
         if self._player:

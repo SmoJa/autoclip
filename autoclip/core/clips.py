@@ -6,12 +6,49 @@ Folder structure: output_dir / Game / YYYY-MM-DD / clip.mp4
 import subprocess
 import threading
 import logging
+import functools
+import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=512)
+def probe_hdr_peak(clip_path_str: str) -> float:
+    """Return peak luminance ratio (MaxCLL nits / 100) for tonemap peak parameter.
+    Falls back to 10.0 (1000 nit HDR10) if no metadata found."""
+    try:
+        r = subprocess.run([
+            "ffprobe", "-v", "quiet",
+            "-select_streams", "v:0",
+            "-read_intervals", "%+#1",
+            "-show_frames",
+            "-show_entries",
+            "stream=color_transfer:"
+            "frame_side_data=max_content,max_average,max_luminance,min_luminance",
+            "-of", "json",
+            clip_path_str,
+        ], capture_output=True, text=True, timeout=10)
+        data = json.loads(r.stdout)
+        for frame in data.get("frames", []):
+            for sd in frame.get("side_data_list", []):
+                max_cll = sd.get("max_content", 0)
+                if max_cll and int(max_cll) > 0:
+                    return int(max_cll) / 100.0
+        for frame in data.get("frames", []):
+            for sd in frame.get("side_data_list", []):
+                max_lum = sd.get("max_luminance", 0)
+                if max_lum:
+                    try:
+                        return float(max_lum) / 100.0
+                    except (ValueError, TypeError):
+                        pass
+    except Exception:
+        pass
+    return 10.0
 
 
 # Imported from metadata module — populated by game plugins at runtime
