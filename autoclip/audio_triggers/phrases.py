@@ -39,7 +39,7 @@ BLOCK_SIZE  = 4000    # 0.25 s chunks — low latency without hammering the CPU
 # ── Config ────────────────────────────────────────────────────────────────────
 
 @dataclass
-class VoiceConfig:
+class PhrasesConfig:
     enabled:      bool  = False
     phrases:      str   = "clip that, save that, clip it"  # comma-separated
     cooldown:     float = 10.0
@@ -51,11 +51,11 @@ class VoiceConfig:
 
 # ── Plugin ────────────────────────────────────────────────────────────────────
 
-class VoicePlugin(AudioTriggerPlugin):
-    NAME              = "Voice"
-    TRIGGER_NAME      = "voice"
-    TRIGGER_DISPLAY   = "Voice"
-    TRIGGER_LOG_STYLE = ("Voice", "#44ddff", "#001a22", True)
+class PhrasesPlugin(AudioTriggerPlugin):
+    NAME              = "Phrases"
+    TRIGGER_NAME      = "phrases"
+    TRIGGER_DISPLAY   = "Phrases"
+    TRIGGER_LOG_STYLE = ("Phrases", "#44ddff", "#001a22", True)
 
     def __init__(self, config: Any, on_trigger: Callable[[], None]):
         super().__init__(config, on_trigger)
@@ -64,8 +64,8 @@ class VoicePlugin(AudioTriggerPlugin):
         self._last_fired   = 0.0
         self._fire_lock    = threading.Lock()
 
-    def _cfg(self) -> VoiceConfig:
-        return getattr(self.config, "voice", VoiceConfig())
+    def _cfg(self) -> PhrasesConfig:
+        return getattr(self.config, "phrases", PhrasesConfig())
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -78,11 +78,11 @@ class VoicePlugin(AudioTriggerPlugin):
             try:
                 __import__(pkg)
             except ImportError:
-                logger.error(f"'Voice' trigger requires '{pkg}' — pip install {pkg}")
+                logger.error(f"'Phrases' trigger requires '{pkg}' — pip install {pkg}")
                 return
 
         if not _MODEL_DIR.exists():
-            logger.warning("Vosk model not found — 'Voice' detection disabled. "
+            logger.warning("Vosk model not found — 'Phrases' detection disabled. "
                            "Download it in Settings → Audio Triggers → Clip That.")
             return
 
@@ -95,7 +95,7 @@ class VoicePlugin(AudioTriggerPlugin):
 
         sources = self._resolve_sources(cfg)
         if not sources:
-            logger.warning("'Voice' detection: no audio sources enabled")
+            logger.warning("'Phrases' detection: no audio sources enabled")
             return
 
         self._running = True
@@ -110,7 +110,7 @@ class VoicePlugin(AudioTriggerPlugin):
             t.start()
 
         phrase_list = [p.strip() for p in cfg.phrases.split(",") if p.strip()]
-        logger.info(f"'Voice' detection started — sources: {[l for _, l in sources]} "
+        logger.info(f"'Phrases' detection started — sources: {[l for _, l in sources]} "
                     f"phrases: {phrase_list}")
 
     def stop(self):
@@ -118,17 +118,17 @@ class VoicePlugin(AudioTriggerPlugin):
 
     # ── Source resolution ──────────────────────────────────────────────────────
 
-    def _resolve_sources(self, cfg: VoiceConfig) -> list[tuple]:
+    def _resolve_sources(self, cfg: PhrasesConfig) -> list[tuple]:
         import sounddevice as sd
         sources = []
         if cfg.mic_enabled:
             device = self._find_device(sd, cfg.mic_device, monitor=False)
             sources.append((device, "mic"))
-            logger.info(f"'Voice' mic source: {device!r} ({cfg.mic_device or 'default'})")
+            logger.info(f"'Phrases' mic source: {device!r} ({cfg.mic_device or 'default'})")
         if cfg.chat_enabled:
             device = self._find_device(sd, cfg.chat_device, monitor=True)
             sources.append((device, "chat"))
-            logger.info(f"'Voice' chat source: {device!r} ({cfg.chat_device or 'auto-monitor'})")
+            logger.info(f"'Phrases' chat source: {device!r} ({cfg.chat_device or 'auto-monitor'})")
         return sources
 
     @staticmethod
@@ -149,7 +149,7 @@ class VoicePlugin(AudioTriggerPlugin):
     # ── Detection loop ─────────────────────────────────────────────────────────
 
     def _run_source(self, device: Optional[int], label: str,
-                    cfg: VoiceConfig, model):
+                    cfg: PhrasesConfig, model):
         import sounddevice as sd
         import vosk
 
@@ -170,9 +170,9 @@ class VoicePlugin(AudioTriggerPlugin):
                             if any(phrase in text for phrase in phrases):
                                 self._maybe_fire(label, text, cfg)
         except Exception as e:
-            logger.error(f"'Voice' capture error ({label}): {e}")
+            logger.error(f"'Phrases' capture error ({label}): {e}")
 
-    def _maybe_fire(self, label: str, text: str, cfg: VoiceConfig):
+    def _maybe_fire(self, label: str, text: str, cfg: PhrasesConfig):
         fired = False
         with self._fire_lock:
             now = time.time()
@@ -180,19 +180,21 @@ class VoicePlugin(AudioTriggerPlugin):
                 self._last_fired = now
                 fired = True
         if fired:
-            logger.info(f"'Voice' [{label}] heard: '{text}'")
-            self.on_trigger()
+            logger.info(f"'Phrases' [{label}] heard: '{text}'")
+            phrases = [p.strip().lower() for p in cfg.phrases.split(",") if p.strip()]
+            matched = next((p for p in phrases if p in text), "phrases")
+            self.on_trigger(name=matched.replace(" ", "_"))
 
     def get_config_class(self):
-        return VoiceConfig
+        return PhrasesConfig
 
     def get_config_widget(self, config: Any, parent=None):
-        return VoiceWidget(config, parent)
+        return PhrasesWidget(config, parent)
 
 
 # ── Settings widget ───────────────────────────────────────────────────────────
 
-def VoiceWidget(config: Any, parent=None):
+def PhrasesWidget(config: Any, parent=None):
     from PyQt6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
         QDoubleSpinBox, QGroupBox, QGridLayout, QPushButton, QLineEdit,
@@ -374,7 +376,7 @@ def VoiceWidget(config: Any, parent=None):
             dl = QGridLayout(detect_box)
             dl.setSpacing(12)
 
-            cfg           = getattr(self._config, "voice", None)
+            cfg           = getattr(self._config, "phrases", None)
             init_enabled  = cfg.enabled   if cfg else False
             init_phrases  = cfg.phrases   if cfg else "clip that, save that, clip it"
             init_cool     = cfg.cooldown  if cfg else 10.0
@@ -513,7 +515,7 @@ def VoiceWidget(config: Any, parent=None):
                 self._status_lbl.setStyleSheet("color: #ff6666;")
 
         def save(self):
-            cfg = getattr(self._config, "voice", None)
+            cfg = getattr(self._config, "phrases", None)
             if cfg is not None:
                 cfg.enabled      = self._enabled_cb.isChecked()
                 cfg.phrases      = self._phrases_edit.text()

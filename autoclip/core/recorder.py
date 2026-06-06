@@ -155,16 +155,32 @@ class RecorderManager:
         if audio_tracks:
             valid_app_devices, valid_hw_devices = self._get_valid_audio_devices()
             all_valid = valid_app_devices | valid_hw_devices
+
+            # If there's a game-specific track for the current game, skip generic/other-game
+            # game tracks to avoid recording the same audio source twice (e.g. CS2 track +
+            # PoE2 track both active when PoE2 runs via Proton and produces multiple nodes).
+            game_type_tracks = [t for t in audio_tracks
+                                if isinstance(t, dict) and t.get("track_type") == "game"]
+            has_specific = any(t.get("game_name") == game for t in game_type_tracks)
+
             tracks_added = 0
             for track in audio_tracks:
                 if isinstance(track, dict):
-                    enabled    = track.get("enabled", True)
-                    device     = track.get("device", "")
-                    track_type = track.get("track_type", "custom")
+                    enabled       = track.get("enabled", True)
+                    device        = track.get("device", "")
+                    track_type    = track.get("track_type", "custom")
+                    game_name_tag = track.get("game_name", "")
                 else:
-                    enabled    = getattr(track, "enabled", True)
-                    device     = getattr(track, "device", "")
-                    track_type = getattr(track, "track_type", "custom")
+                    enabled       = getattr(track, "enabled", True)
+                    device        = getattr(track, "device", "")
+                    track_type    = getattr(track, "track_type", "custom")
+                    game_name_tag = getattr(track, "game_name", "")
+
+                if track_type == "game":
+                    if game_name_tag and game_name_tag != game:
+                        continue  # tagged for a different game
+                    if not game_name_tag and has_specific:
+                        continue  # untagged game track superseded by a specific one
                 if not enabled or not device or device in ('', 'none', 'default', 'default_input', 'default_output'):
                     continue
                 # gsr uses "app:Name" prefix for application audio

@@ -2005,10 +2005,11 @@ class PlayerView(QWidget):
         )
         dlg.exec()
 
-    def _on_tracks_probed(self, n_tracks: int, volumes: list, mutes: list, colors: list):
+    def _on_tracks_probed(self, n_tracks: int, volumes: list, mutes: list, colors: list,
+                          labels: list):
         if self._player:
             self._player.set_audio_tracks(n_tracks, volumes, mutes)
-        self._timeline.setup_track_controls(n_tracks, volumes, mutes, colors)
+        self._timeline.setup_track_controls(n_tracks, volumes, mutes, colors, labels)
 
     def _on_track_waveform(self, idx: int, samples, color: str):
         QTimer.singleShot(0, lambda: self._timeline.set_track_waveform(idx, samples, color))

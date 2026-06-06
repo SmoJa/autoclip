@@ -92,6 +92,7 @@ class CS2Plugin(GamePlugin):
     NAME          = "CS2"
     PROCESS_NAMES       = ["cs2", "cs2_linux64"]
     AUDIO_PROCESS_NAME  = "cs2"   # maps to 'SDL Application' in PipeWire
+    AUDIO_APP_NAMES     = {"cs2": "CS2", "hl2": "Half-Life 2", "dota2": "Dota 2"}
     MAP_PREFIXES  = ["de_", "ar_", "cs_", "gg_", "dz_", "gd_"]
 
     MODE_ABBREVS = {

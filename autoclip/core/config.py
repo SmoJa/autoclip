@@ -10,6 +10,7 @@ CONFIG_PATH = Path.home() / ".config" / "autoclip" / "config.json"
 @dataclass
 class Config:
     recording_enabled: bool = True
+    record_without_game: bool = False   # keep gsr running even when no game detected
     output_dir: str = str(Path.home() / "Videos" / "Autoclip")
     clip_length_seconds: int = 30
     post_event_seconds: int = 7
@@ -95,6 +96,12 @@ class Config:
             else:
                 for k in ("laughter_enabled", "laughter_audio_source", "laughter_sensitivity"):
                     data.pop(k, None)
+
+            # Migrate trigger_voice → trigger_phrases (plugin renamed)
+            if "trigger_voice" in data and "trigger_phrases" not in data:
+                data["trigger_phrases"] = data.pop("trigger_voice")
+            else:
+                data.pop("trigger_voice", None)
 
             # Migrate old pre_event_seconds
             if "pre_event_seconds" in data and "clip_length_seconds" not in data:

@@ -122,9 +122,11 @@ class AppController:
         self.hotkey_manager.start()
         for plugin in self._audio_trigger_plugins:
             plugin.start()
+        if self.config.record_without_game and self.config.recording_enabled:
+            self.recorder.start("General")
         threading.Thread(target=self._game_watcher, daemon=True).start()
         self._emit_status("running")
-        logger.info("AutoClip started")
+        logger.info(f"AutoClip started (recording_enabled={self.config.recording_enabled})")
 
     def stop(self):
         self._running = False
@@ -138,6 +140,7 @@ class AppController:
         self._emit_status("stopped")
 
     def set_recording_enabled(self, enabled: bool):
+        logger.info(f"Recording {'enabled' if enabled else 'disabled'}")
         self.config.recording_enabled = enabled
         if not enabled:
             self.recorder.stop()
@@ -187,12 +190,18 @@ class AppController:
 
     def _detect_game(self):
         """Return plugin class for the first detected running game, or None."""
-        from autoclip.games.registry import detect_running_game
+        from autoclip.games.registry import detect_running_game, detect_running_game_by_cmdline
         try:
             result = subprocess.run(
                 ["ps", "-eo", "comm="], capture_output=True, text=True)
             procs = result.stdout.splitlines()
-            return detect_running_game(procs)
+            game = detect_running_game(procs)
+            if game:
+                return game
+            # Fallback: full cmdlines for Wine/Proton games whose comm is generic
+            result2 = subprocess.run(
+                ["ps", "-eo", "args="], capture_output=True, text=True)
+            return detect_running_game_by_cmdline(result2.stdout.splitlines())
         except Exception:
             return None
 
@@ -226,10 +235,16 @@ class AppController:
             ).start()
 
             if self.config.recording_enabled:
+                # Stop any existing recording (e.g. general mode) before starting game
+                self.recorder.stop()
                 self.recorder.start(new_name)
         else:
             self._emit_event("game_closed")
-            self.recorder.stop()
+            if self.config.record_without_game and self.config.recording_enabled:
+                self.recorder.stop()
+                self.recorder.start("General")
+            else:
+                self.recorder.stop()
 
     def _on_game_event(self, event: str):
         """Callback from active game plugin."""
@@ -249,16 +264,40 @@ class AppController:
             if not device:
                 return
             logger.info(f"Resolved game audio: {plugin_cls.NAME} → {device}")
-            tracks = self.config.audio_tracks or []
-            updated = False
-            for track in tracks:
-                if isinstance(track, dict) and track.get("track_type") == "game":
-                    if track.get("device") != device:
-                        track["device"] = device
-                        updated = True
+            tracks = self.config.audio_tracks
+            if tracks is None:
+                tracks = []
+                self.config.audio_tracks = tracks
+
+            game_name = plugin_cls.NAME
+            # Find existing track for this specific game (by game_name tag or label)
+            target = None
+            for t in tracks:
+                if not isinstance(t, dict) or t.get("track_type") != "game":
+                    continue
+                if t.get("game_name") == game_name or t.get("label") == game_name:
+                    target = t
                     break
-            if updated:
-                self.config.save()
+
+            if target is None:
+                # Add a new per-game track
+                target = {
+                    "label":      game_name,
+                    "device":     device,
+                    "enabled":    True,
+                    "track_type": "game",
+                    "game_name":  game_name,
+                    "volume":     1.0,
+                    "muted":      False,
+                }
+                tracks.append(target)
+            else:
+                target["device"]    = device
+                target["label"]     = game_name
+                target["game_name"] = game_name
+
+            self.config.save()
+            self._emit_event(f"game_audio_resolved:{game_name}")
         except Exception as e:
             logger.warning(f"Audio node resolution failed: {e}")
 

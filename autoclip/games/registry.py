@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 # Maps process name → plugin class
 _PROCESS_MAP: Dict[str, Type[GamePlugin]] = {}
+# Maps cmdline substring → plugin class (for Wine/Proton games)
+_CMDLINE_MAP: Dict[str, Type[GamePlugin]] = {}
 # Maps game NAME → plugin class
 _NAME_MAP: Dict[str, Type[GamePlugin]] = {}
 # All loaded plugins
@@ -54,6 +56,8 @@ def _register(cls: Type[GamePlugin]):
     _NAME_MAP[cls.NAME] = cls
     for proc in cls.PROCESS_NAMES:
         _PROCESS_MAP[proc.lower()] = cls
+    for substr in cls.PROCESS_CMDLINE_CONTAINS:
+        _CMDLINE_MAP[substr.lower()] = cls
     logger.info(f"Registered game plugin: {cls.NAME} "
                 f"(processes: {cls.PROCESS_NAMES})")
 
@@ -81,6 +85,26 @@ def detect_running_game(process_list: List[str]) -> Optional[Type[GamePlugin]]:
         if any(proc in p for p in lower):
             return cls
     return None
+
+
+def detect_running_game_by_cmdline(cmdline_list: List[str]) -> Optional[Type[GamePlugin]]:
+    """Fallback detection using full process cmdlines (for Wine/Proton games)."""
+    _load_plugins()
+    lower = [c.lower() for c in cmdline_list]
+    for substr, cls in _CMDLINE_MAP.items():
+        if any(substr in c for c in lower):
+            return cls
+    return None
+
+
+def build_audio_app_names() -> dict:
+    """Merge all plugins' AUDIO_APP_NAMES into one lookup dict (lowercase keys)."""
+    _load_plugins()
+    merged = {}
+    for cls in _ALL_PLUGINS:
+        for k, v in cls.AUDIO_APP_NAMES.items():
+            merged[k.lower()] = v
+    return merged
 
 
 def build_global_metadata_tables() -> dict:

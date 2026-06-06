@@ -34,9 +34,12 @@ class GamePlugin:
     """
 
     # ── Identity ──────────────────────────────────────────────────────────────
-    NAME: str = ""                   # Display name e.g. "CS2", "Valorant"
-    PROCESS_NAMES: list = []         # Process names to watch e.g. ["cs2", "cs2_linux64"]
-    AUDIO_PROCESS_NAME: str = ""      # PipeWire process name if different from PROCESS_NAMES[0]
+    NAME: str = ""                        # Display name e.g. "CS2", "Valorant"
+    PROCESS_NAMES: list = []              # Process names to watch e.g. ["cs2", "cs2_linux64"]
+    PROCESS_CMDLINE_CONTAINS: list = []   # Fallback: substrings to match against full cmdlines
+                                          # (used for Wine/Proton games whose comm is generic)
+    AUDIO_PROCESS_NAME: str = ""          # PipeWire process name if different from PROCESS_NAMES[0]
+    AUDIO_APP_NAMES: dict = {}            # binary/node_name (lowercase) → display name for audio picker
 
     # ── Metadata vocabulary ───────────────────────────────────────────────────
     # These get merged into the global metadata tables at load time.

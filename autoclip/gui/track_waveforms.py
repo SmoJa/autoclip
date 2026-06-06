@@ -23,8 +23,8 @@ class MultiTrackWaveform(QObject):
       - emits tracks_probed  → timeline sets up VolumeDial controls
       - emits waveform_ready → timeline renders waveform strips
     """
-    # n_tracks, volumes, mutes, colors
-    tracks_probed  = pyqtSignal(int, list, list, list)
+    # n_tracks, volumes, mutes, colors, labels
+    tracks_probed  = pyqtSignal(int, list, list, list, list)
     # track_idx, samples (np.ndarray), color (str)
     waveform_ready = pyqtSignal(int, object, str)
 
@@ -61,11 +61,13 @@ class MultiTrackWaveform(QObject):
         default_colors    = list(track_colors_map.values())
         track_color_list: List[str] = []
 
+        track_labels: List[str] = []
         for i in range(n):
             cfg   = enabled_tracks[i] if i < len(enabled_tracks) else {}
             ttype = cfg.get("track_type", "custom")
             color = track_colors_map.get(ttype, default_colors[i % len(default_colors)])
             track_color_list.append(color)
+            track_labels.append(cfg.get("label", f"Track {i + 1}"))
 
         volumes = [
             (enabled_tracks[i].get("volume", 1.0) if i < len(enabled_tracks) else 1.0)
@@ -76,7 +78,7 @@ class MultiTrackWaveform(QObject):
             for i in range(n)
         ]
 
-        self.tracks_probed.emit(n, volumes, mutes, track_color_list)
+        self.tracks_probed.emit(n, volumes, mutes, track_color_list, track_labels)
 
         threading.Thread(
             target=self._extract_all,

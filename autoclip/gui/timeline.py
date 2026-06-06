@@ -48,6 +48,7 @@ class TimelineWidget(QWidget):
         self._waveforms:       list = []
         self._waveform_colors: list = []
         self._track_volumes:   list = []
+        self._track_labels:    list = []
         self._in  = 0.0
         self._out = 1.0
         self._pos = 0.0
@@ -78,10 +79,12 @@ class TimelineWidget(QWidget):
 
     # ── public: track controls ────────────────────────────────────────────
 
-    def setup_track_controls(self, n: int, volumes: list, mutes: list, colors: list):
+    def setup_track_controls(self, n: int, volumes: list, mutes: list, colors: list,
+                             labels: list = None):
         from .widgets import VolumeDial
         self.clear_track_controls()
         self._track_volumes = [volumes[i] if i < len(volumes) else 1.0 for i in range(n)]
+        self._track_labels  = list(labels) if labels else [f"Track {i+1}" for i in range(n)]
         if n == 0:
             return
         wh       = self.height() - PILL_ZONE_H
@@ -97,6 +100,8 @@ class TimelineWidget(QWidget):
             dial.setFixedSize(dial_dim, dial_dim)
             dial.move(x, y)
             dial.show()
+            if i < len(self._track_labels) and self._track_labels[i]:
+                dial.setToolTip(self._track_labels[i])
             dial.value_changed.connect(lambda v, idx=i: self._on_dial_volume(idx, v))
             self._track_dials.append(dial)
 
@@ -111,6 +116,7 @@ class TimelineWidget(QWidget):
         for d in self._track_dials:
             d.deleteLater()
         self._track_dials.clear()
+        self._track_labels = []
 
     # ── public: playhead / handles / markers ──────────────────────────────
 
@@ -207,6 +213,7 @@ class TimelineWidget(QWidget):
                     p.setPen(QPen(QColor(t.border), 1))
                     p.drawLine(DIAL_W, div_y, w, div_y)
                     p.setPen(Qt.PenStyle.NoPen)
+
         else:
             p.setPen(QPen(QColor(t.border), 2))
             p.drawLine(DIAL_W, wz + wh // 2, w, wz + wh // 2)
@@ -309,6 +316,34 @@ class TimelineWidget(QWidget):
         p.setBrush(playhead_color)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPolygon(*[QPoint(px - 6, wz), QPoint(px + 6, wz), QPoint(px, wz + 10)])
+
+        # ── Track labels (drawn last — on top of handles and playhead) ────
+        if self._track_labels and self._waveforms:
+            n_tracks = len(self._waveforms)
+            strip_h  = max(1, wh // n_tracks)
+            label_h  = 14
+            p.setFont(QFont("", 8))
+            fm_l = p.fontMetrics()
+            for ti in range(min(n_tracks, len(self._track_labels))):
+                label = self._track_labels[ti]
+                if not label:
+                    continue
+                strip_top = wz + ti * strip_h
+                label_y   = strip_top + (strip_h - label_h) // 2
+                label_w   = fm_l.horizontalAdvance(label)
+                lx        = DIAL_W + 6
+                pad       = 3
+                # Dark backdrop
+                bg = QColor(0, 0, 0); bg.setAlpha(120)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(bg)
+                p.drawRoundedRect(lx - pad, label_y - 1, label_w + pad * 2, label_h + 2, 2, 2)
+                # Text
+                clr = QColor("#ffffff"); clr.setAlpha(200)
+                p.setPen(QPen(clr, 1))
+                p.drawText(QRect(lx, label_y, label_w + 4, label_h),
+                           Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                           label)
 
         p.end()
 

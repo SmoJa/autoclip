@@ -271,7 +271,7 @@ class AutoRecordTab(QWidget):
 
                     section = CollapsibleSection(
                         plugin_cls.NAME, widget,
-                        expanded=(i == 0),
+                        expanded=False,
                         header_widget=enable_cb
                     )
                     self._layout.addWidget(section)
@@ -332,6 +332,16 @@ class RecordingTab(QWidget):
         )
         self.autostart_chk.toggled.connect(self._on_autostart_toggled)
         app_l.addWidget(self.autostart_chk)
+
+        self.record_without_game_chk = QCheckBox("Record without a game (for audio triggers)")
+        self.record_without_game_chk.setChecked(config.record_without_game)
+        self.record_without_game_chk.setToolTip(
+            "Keep the replay buffer running even when no game is detected.\n"
+            "Clips are saved to a 'General' folder and triggered by audio\n"
+            "plugins (Reactions, Voice) regardless of game state."
+        )
+        self.record_without_game_chk.toggled.connect(self._mark_dirty)
+        app_l.addWidget(self.record_without_game_chk)
         layout.addWidget(app_g)
 
         # Output directory
@@ -777,6 +787,7 @@ class RecordingTab(QWidget):
         self.config.clip_length_seconds = self.pre.value()
         self.config.post_event_seconds = min(self.post.value(), self.pre.value() - 1)
         self.config.manual_hotkey = self.hotkey.text()
+        self.config.record_without_game = self.record_without_game_chk.isChecked()
         self.config.save()
         self._mark_clean()
 
@@ -939,11 +950,12 @@ class MainWindow(QMainWindow):
             hl.addWidget(w)
 
         # Recording toggle — large pill style
+        _rec_on = self.controller.config.recording_enabled
         self.rec_toggle = QPushButton("REC  OFF")
         self.rec_toggle.setCheckable(True)
-        self.rec_toggle.setChecked(True)
+        self.rec_toggle.setChecked(_rec_on)
         self.rec_toggle.setFixedSize(110, 38)
-        self._update_rec_toggle(True)
+        self._update_rec_toggle(_rec_on)
         self.rec_toggle.clicked.connect(self._toggle_recording)
         hl.addWidget(self.rec_toggle)
         root.addWidget(hdr)
@@ -1090,6 +1102,9 @@ class MainWindow(QMainWindow):
                 f"color:{t.success}; font-size:11px; margin-right:16px;")
             self._game_name_lbl.setText(self._current_game)
             self.event_log.add_system(f"Game started: {self._current_game}")
+        elif e.startswith("game_audio_resolved:"):
+            game_name = e.split(":", 1)[1]
+            self.rec_tab.audio_manager.reload_tracks(active_game=game_name)
         elif e == "game_closed":
             self._current_game = None
             self._game_dot.setStyleSheet(f"color:{t.text_faint}; font-size:10px;")
@@ -1097,6 +1112,7 @@ class MainWindow(QMainWindow):
                 f"color:{t.text_faint}; font-size:11px; margin-right:16px;")
             self._game_name_lbl.setText("No game")
             self.event_log.add_system("Game closed")
+            self.rec_tab.audio_manager.reload_tracks(active_game="")
         else:
             # Format: "game:trigger"
             game    = e.split(":", 1)[0] if ":" in e else ""

@@ -30,6 +30,12 @@ panns_data/
 # Dev-only test files — never commit
 dev/
 
+# Experimental plugins — gitignored until ready for release
+# To release a plugin, remove its entry here and commit the file.
+autoclip/audio_triggers/poe2_loot_drops.py
+autoclip/audio_triggers/poe2_loot_drops_sounds/
+autoclip/games/poe2.py
+
 # Editor / IDE
 .vscode/
 .idea/

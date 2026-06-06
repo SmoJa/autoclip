@@ -36,7 +36,8 @@ class TrackRow(QWidget):
     changed          = pyqtSignal()
     remove_requested = pyqtSignal(object)
 
-    def __init__(self, track: Dict[str, Any], sources: List[Dict], parent=None):
+    def __init__(self, track: Dict[str, Any], sources: List[Dict],
+                 is_active: bool = False, parent=None):
         super().__init__(parent)
         self._track = track
         t = _theme.current
@@ -46,6 +47,16 @@ class TrackRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 4, 10, 4)
         layout.setSpacing(10)
+
+        # Active indicator dot — visible when this game's audio is currently live
+        self._active_dot = QLabel("●")
+        self._active_dot.setFixedWidth(14)
+        self._active_dot.setStyleSheet(
+            f"color: {t.success}; font-size: 10px;" if is_active
+            else "color: transparent; font-size: 10px;"
+        )
+        self._active_dot.setToolTip("Currently active game" if is_active else "")
+        layout.addWidget(self._active_dot)
 
         # Label edit
         self._label_edit = QLineEdit(track.get("label", "Track"))
@@ -131,6 +142,15 @@ class TrackRow(QWidget):
         current = self._track.get("device", "")
         self._populate_sources(sources, current)
 
+    def update_active(self, is_active: bool):
+        t = _theme.current
+        if is_active:
+            self._active_dot.setStyleSheet(f"color: {t.success}; font-size: 10px;")
+            self._active_dot.setToolTip("Currently active")
+        else:
+            self._active_dot.setStyleSheet("color: transparent; font-size: 10px;")
+            self._active_dot.setToolTip("")
+
     def _on_label_changed(self, text: str):
         self._track["label"] = text
         self.changed.emit()
@@ -203,6 +223,7 @@ class AudioTrackManager(QWidget):
         self._sources: List[Dict] = []
         self._track_rows: List[TrackRow] = []
         self._section_layouts: Dict[str, QVBoxLayout] = {}
+        self._active_game: str = ""
 
         self._sources_ready_sig.connect(self._on_sources_ready)
         self._auto_tracks_sig.connect(self._apply_auto_tracks)
@@ -329,11 +350,21 @@ class AudioTrackManager(QWidget):
         for track in tracks:
             self._add_row(track)
 
+    def _is_track_active(self, track: Dict) -> bool:
+        ttype = track.get("track_type", "custom")
+        if ttype == "game":
+            return bool(self._active_game) and track.get("game_name") == self._active_game
+        # For mic/chat/custom: active if the configured device is in the detected sources
+        device = track.get("device", "")
+        if not device:
+            return False
+        return any(s.get("device") == device for s in self._sources)
+
     def _add_row(self, track: Dict):
         ttype = track.get("track_type", "custom")
         rows_l = self._section_layouts[_section_for_type(ttype)]
 
-        row = TrackRow(track, self._sources)
+        row = TrackRow(track, self._sources, is_active=self._is_track_active(track))
         row.changed.connect(self._on_track_changed)
         row.remove_requested.connect(self._remove_row)
         # Insert before the trailing stretch
@@ -412,6 +443,15 @@ class AudioTrackManager(QWidget):
         )
         for row in self._track_rows:
             row.update_sources(sources)
+            row.update_active(self._is_track_active(row.track_data()))
+
+    def reload_tracks(self, active_game: str = ""):
+        """Reload track rows from config — call after config.audio_tracks is mutated externally."""
+        self._active_game = active_game
+        self._load_tracks()
+        for row in self._track_rows:
+            row.update_sources(self._sources)
+            row.update_active(self._is_track_active(row.track_data()))
 
     def auto_detect(self, game: str = "", game_display_name: str = ""):
         """Auto-populate tracks — thread-safe."""

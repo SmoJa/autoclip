@@ -49,25 +49,38 @@ FRIENDLY_APP_NAMES: Dict[str, str] = {
     "spotify":    "Spotify",
     "vlc":        "VLC",
     "mpv":        "mpv",
-    # Games / launchers
-    "cs2":        "CS2",
-    "hl2":        "Half-Life 2",
-    "dota2":      "Dota 2",
+    # Launchers / Wine (game names live in each game plugin's AUDIO_APP_NAMES)
     "steam":      "Steam",
     "wine":       "Wine",
     "wineserver": "Wine",
 }
 
 
+_game_audio_names: Optional[dict] = None
+
+def _get_game_audio_names() -> dict:
+    global _game_audio_names
+    if _game_audio_names is None:
+        try:
+            from autoclip.games.registry import build_audio_app_names
+            _game_audio_names = build_audio_app_names()
+        except Exception:
+            _game_audio_names = {}
+    return _game_audio_names
+
+
 def _app_display_name(binary: str, node_name: str) -> str:
     """Return a human-readable name for an app audio source."""
+    game_names = _get_game_audio_names()
+    for key in (binary.lower() if binary else "", node_name.lower()):
+        if not key:
+            continue
+        if key in FRIENDLY_APP_NAMES:
+            return FRIENDLY_APP_NAMES[key]
+        if key in game_names:
+            return game_names[key]
     if binary:
-        friendly = FRIENDLY_APP_NAMES.get(binary.lower())
-        if friendly:
-            return friendly
-        # Unknown binary: capitalise it (e.g. "obs" → "Obs", better than nothing)
         return binary.capitalize()
-    # No binary info from pw-dump — fall back to the raw PipeWire node name
     return node_name
 
 
@@ -152,14 +165,19 @@ def find_audio_node_for_pid(pid: int) -> Optional[str]:
 
 def find_audio_node_for_binary(binary: str) -> Optional[str]:
     """
-    Given a process binary name, find its audio output node name.
+    Given a process binary name or app name, find its audio output node name.
+    Checks both binary and app_name — Wine/Proton processes report binary as
+    "wine64-preloader" but app_name as the actual exe (e.g. "PathOfExileSteam.exe").
     Returns the node_name string or None.
     """
     nodes = get_pw_app_nodes()
     binary_lower = binary.lower()
     matches = [
         n for n in nodes
-        if binary_lower in n["binary"].lower() and n["node_name"]
+        if n["node_name"] and (
+            binary_lower in n["binary"].lower() or
+            binary_lower in n["app_name"].lower()
+        )
     ]
     if not matches:
         return None
