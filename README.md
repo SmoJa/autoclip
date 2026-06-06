@@ -15,10 +15,11 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 - **Automatic game triggers** — CS2 kills, headshots, multi-kills, clutches, and bomb events via Game State Integration (GSI). Zero anti-cheat risk — GSI is an official Valve feature.
 - **Audio triggers** — two built-in triggers monitor your mic and chat audio simultaneously:
   - **Reactions** — detects laughter, screaming, and shouting via PANNs CNN6 (local ML inference). Each reaction type has independent sensitivity and cooldown settings.
-  - **Voice phrases** — saves a clip when you say a configured phrase (e.g. "clip that"). Uses Vosk offline speech recognition — no cloud, no API key.
+  - **Phrases** — saves a clip when you say a configured phrase (e.g. "clip that"). Uses Vosk offline speech recognition — no cloud, no API key. The matched phrase is recorded in the clip filename.
   - New triggers can be added as single-file plugins.
 - **Manual hotkey** — save a clip at any time with `Ctrl+Shift+S` (configurable).
-- **Clip browser** — browse, preview, trim, and export clips with a built-in player. The timeline shows stacked per-track waveforms with per-track volume dials, frame-step controls, and set-in/set-out buttons.
+- **Record without a game** — optionally keep the replay buffer running even when no game is detected, so audio triggers can save clips at any time (clips go to a `General/` folder).
+- **Clip browser** — browse, preview, trim, and export clips with a built-in player. The timeline shows stacked per-track waveforms with labelled tracks, per-track volume dials, frame-step controls, and set-in/set-out buttons.
 - **Multi-track audio** — record game audio, mic, and chat as separate tracks; adjust per-track volume in the timeline; mix down on export.
 - **Clip metadata** — events, map, round, team, and score are encoded in the filename so clips are self-describing.
 - **Extensible** — adding a new game or audio trigger is a single new file. See [Adding a new game](#adding-a-new-game) below.
@@ -38,7 +39,7 @@ Automatic game clip recorder for Linux. Monitors game events in real time and tr
 *Game Triggers — CS2 kill, round, and situational trigger configuration*
 
 ![Audio triggers](Screenshot_5.png)
-*Audio Triggers — Reactions (laughter, screaming, shouting) and Voice phrase detection*
+*Audio Triggers — Reactions (laughter, screaming, shouting) and Phrases trigger*
 
 ![Settings](Screenshot_1.png)
 *Settings — recorder, audio tracks, encoding, and clip timing*
@@ -82,7 +83,7 @@ pip install -r autoclip/requirements.txt
 | onnxruntime | ML inference for Reactions trigger |
 | requests | GSI HTTP server |
 | send2trash | Trash clips from the browser (optional, falls back to permanent delete) |
-| vosk | Offline speech recognition for Voice trigger (optional) |
+| vosk | Offline speech recognition for Phrases trigger (optional) |
 
 > **Hotkey note:** `pynput` requires your user to be in the `input` group:
 > ```bash
@@ -95,7 +96,7 @@ pip install -r autoclip/requirements.txt
 Both audio trigger models are downloaded automatically the first time you enable them in Settings — no extra steps needed.
 
 - **Reactions** — uses PANNs CNN6 (~25 MB ONNX). Downloaded via **Settings → Audio Triggers → Reactions**. If you prefer to generate the model file yourself, see `scripts/export_audio_classifier.py`.
-- **Voice phrases** — uses the Vosk small English model (~40 MB). Downloaded via **Settings → Audio Triggers → Voice**.
+- **Phrases** — uses the Vosk small English model (~40 MB). Downloaded via **Settings → Audio Triggers → Phrases**.
 
 ---
 
@@ -138,7 +139,7 @@ To enable autostart on login, use the toggle in **Settings → Application**.
 ```
 CS2 (GSI HTTP) ──► cs2.py ──► controller.py ──► clip_trigger.py ──► gpu-screen-recorder
                                     ▲
-         reactions.py / voice.py ─┘  (audio triggers, same pipeline)
+         reactions.py / phrases.py ─┘  (audio triggers, same pipeline)
 ```
 
 - gpu-screen-recorder runs a **replay buffer** — the last N seconds of video/audio are held in RAM at near-zero CPU cost.
@@ -167,7 +168,7 @@ Create `autoclip/games/mygame.py` with a class inheriting `GamePlugin`. Set `NAM
 
 ## Adding a new audio trigger
 
-Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Set `NAME`, `TRIGGER_NAME`, and implement `start()` / `stop()`. See `audio_triggers/base.py` for the full interface and `audio_triggers/reactions.py` or `audio_triggers/voice.py` as references.
+Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Set `NAME`, `TRIGGER_NAME`, and implement `start()` / `stop()`. See `audio_triggers/base.py` for the full interface and `audio_triggers/reactions.py` or `audio_triggers/phrases.py` as references.
 
 ---
 
@@ -175,7 +176,7 @@ Create `autoclip/audio_triggers/myplugin.py` inheriting `AudioTriggerPlugin`. Se
 
 AutoClip is in early release. The following areas have not been thoroughly tested and may have rough edges:
 
-- **Reactions and Voice triggers** — implemented and functional but not extensively tested in real gameplay sessions. Sensitivity defaults and phrase detection accuracy may need tuning per setup.
+- **Reactions and Phrases triggers** — implemented and functional but not extensively tested in real gameplay sessions. Sensitivity defaults and phrase detection accuracy may need tuning per setup.
 - **AMD and Intel GPUs** — codec and hardware detection is implemented for AMD and Intel but has only been tested on NVIDIA. Encoding settings may need manual adjustment.
 - **HDR recording** — the HDR codec path exists but is untested. HDR clip previews in the player may show highlights as slightly grey rather than pure white; exports are unaffected.
 - **Plugin architecture** — the game and audio trigger plugin systems are designed for extensibility but have only been tested with the built-in plugins. There may be rough edges when adding new ones.
@@ -212,7 +213,7 @@ autoclip/
 │   ├── base.py                    # AudioTriggerPlugin interface
 │   ├── registry.py                # Auto-discovery
 │   ├── reactions.py               # PANNs CNN6 laughter/screaming/shouting detector
-│   └── voice.py                   # Vosk offline voice phrase trigger
+│   └── phrases.py                 # Vosk offline phrase trigger
 └── gui/
     ├── main_window.py             # Main window, Dashboard, Settings tabs
     ├── clips_tab.py               # Clip browser and player
