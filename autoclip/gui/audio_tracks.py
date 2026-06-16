@@ -48,6 +48,16 @@ class TrackRow(QWidget):
         layout.setContentsMargins(10, 4, 10, 4)
         layout.setSpacing(10)
 
+        # Enable/disable toggle — far left, clearly coloured ON (green) / OFF (grey)
+        from PyQt6.QtWidgets import QPushButton as _QPB
+        self._enable_btn = _QPB()
+        self._enable_btn.setCheckable(True)
+        self._enable_btn.setChecked(track.get("enabled", True))
+        self._enable_btn.setFixedSize(52, 26)
+        self._enable_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._enable_btn.toggled.connect(self._on_enabled_changed)
+        layout.addWidget(self._enable_btn)
+
         # Active indicator dot — visible when this game's audio is currently live
         self._active_dot = QLabel("●")
         self._active_dot.setFixedWidth(14)
@@ -83,12 +93,8 @@ class TrackRow(QWidget):
         self._source_combo.currentIndexChanged.connect(self._on_source_changed)
         layout.addWidget(self._source_combo, 1)
 
-        # Enable checkbox
-        self._enable_cb = QCheckBox()
-        self._enable_cb.setChecked(track.get("enabled", True))
-        self._enable_cb.setToolTip("Enable this audio track")
-        self._enable_cb.toggled.connect(self._on_enabled_changed)
-        layout.addWidget(self._enable_cb)
+        # Apply the initial enabled/disabled appearance
+        self._apply_enabled_style(self._enable_btn.isChecked())
 
         # Remove button
         rm_btn = QPushButton("✕")
@@ -203,7 +209,27 @@ class TrackRow(QWidget):
 
     def _on_enabled_changed(self, checked: bool):
         self._track["enabled"] = checked
+        self._apply_enabled_style(checked)
         self.changed.emit()
+
+    def _apply_enabled_style(self, enabled: bool):
+        t = _theme.current
+        if enabled:
+            self._enable_btn.setText("ON")
+            self._enable_btn.setStyleSheet(
+                f"QPushButton {{ background: {t.success}; color: #06210f; border: none;"
+                f" border-radius: 13px; font-size: 10px; font-weight: bold; padding: 0px; }}")
+            self._enable_btn.setToolTip("Track enabled — click to disable")
+        else:
+            self._enable_btn.setText("OFF")
+            self._enable_btn.setStyleSheet(
+                f"QPushButton {{ background: {t.bg_overlay}; color: {t.text_faint};"
+                f" border: 1px solid {t.border}; border-radius: 13px; font-size: 10px;"
+                f" font-weight: bold; padding: 0px; }}")
+            self._enable_btn.setToolTip("Track disabled — click to enable")
+        # Grey out the row's controls when the track is off — clear visual state.
+        self._label_edit.setEnabled(enabled)
+        self._source_combo.setEnabled(enabled)
 
     def track_data(self) -> Dict[str, Any]:
         return self._track
@@ -256,10 +282,14 @@ class AudioTrackManager(QWidget):
             section_widget = self._make_section(key, header_text, add_type)
             layout.addWidget(section_widget)
 
-        note = QLabel(
+        import sys as _sys
+        _note_text = (
+            "Select your audio devices manually from the dropdowns above."
+            if _sys.platform == "win32" else
             "Game audio uses per-app PipeWire capture to record only the game. "
             "Launch the game and Discord before clicking Auto-Detect for best results."
         )
+        note = QLabel(_note_text)
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {t.text_faint}; font-size: 10px;")
         layout.addWidget(note)

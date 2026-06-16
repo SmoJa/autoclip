@@ -3,7 +3,47 @@ import logging
 import threading
 import time
 import subprocess
+import sys
 from typing import Callable, Optional
+
+
+def _list_processes_win32():
+    """Return list of process image names using ctypes TH32 snapshot.
+    Avoids subprocess entirely to sidestep Python 3.11.9 Windows AV bug."""
+    import ctypes, ctypes.wintypes
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize",              ctypes.wintypes.DWORD),
+            ("cntUsage",            ctypes.wintypes.DWORD),
+            ("th32ProcessID",       ctypes.wintypes.DWORD),
+            ("th32DefaultHeapID",   ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID",        ctypes.wintypes.DWORD),
+            ("cntThreads",          ctypes.wintypes.DWORD),
+            ("th32ParentProcessID", ctypes.wintypes.DWORD),
+            ("pcPriClassBase",      ctypes.c_long),
+            ("dwFlags",             ctypes.wintypes.DWORD),
+            ("szExeFile",           ctypes.c_char * 260),
+        ]
+
+    k32 = ctypes.windll.kernel32
+    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == INVALID_HANDLE_VALUE:
+        return []
+    try:
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        names = []
+        if k32.Process32First(snap, ctypes.byref(pe)):
+            while True:
+                names.append(pe.szExeFile.decode("utf-8", errors="replace"))
+                if not k32.Process32Next(snap, ctypes.byref(pe)):
+                    break
+        return names
+    finally:
+        k32.CloseHandle(snap)
 
 from .config import Config
 from .recorder import RecorderManager
@@ -108,13 +148,32 @@ class AppController:
                     f"{[p.NAME for p in self._audio_trigger_plugins]}")
 
     def _ensure_codec_detected(self):
+        import sys
         codec = getattr(self.config, "gpu_recorder_codec", "")
         if not codec:
             from autoclip.core.hardware_detection import detect_best_codec
             codec = detect_best_codec()
+            # The Windows/libobs recorder takes a bare codec (hevc|h264|av1) — HDR is
+            # handled via the encoder profile, not a codec suffix. Normalize.
+            if sys.platform == "win32":
+                cl = codec.lower()
+                codec = "av1" if cl.startswith("av1") else "h264" if cl == "h264" else "hevc"
             self.config.gpu_recorder_codec = codec
             self.config.save()
             logger.info(f"Auto-detected codec: {codec}")
+
+        # First-run hardware-aware encoding preset (Windows/NVENC only).
+        if sys.platform == "win32" and not getattr(self.config, "encoding_initialized", False):
+            from autoclip.core.hardware_detection import detect_gpu_vendor
+            from autoclip.core.config import apply_encoding_preset
+            vendor = detect_gpu_vendor()
+            # NVENC (NVIDIA) handles CQP cheaply -> Balanced. Other GPUs fall back to
+            # CPU x264, where a fast CBR preset spares the processor -> Performance.
+            name = "balanced" if vendor == "nvidia" else "performance"
+            apply_encoding_preset(self.config, name)
+            self.config.encoding_initialized = True
+            self.config.save()
+            logger.info(f"Hardware-aware encoding preset: {name} (GPU={vendor})")
 
     def start(self):
         self._running = True
@@ -124,7 +183,10 @@ class AppController:
             plugin.start()
         if self.config.record_without_game and self.config.recording_enabled:
             self.recorder.start("General")
-        threading.Thread(target=self._game_watcher, daemon=True).start()
+        if sys.platform != "win32":
+            # On Windows, background threads AV after Qt/mpv load (heap corruption).
+            # Game detection is driven by a QTimer in the main thread instead.
+            threading.Thread(target=self._game_watcher, daemon=True).start()
         self._emit_status("running")
         logger.info(f"AutoClip started (recording_enabled={self.config.recording_enabled})")
 
@@ -180,6 +242,34 @@ class AppController:
 
     # ── Game detection ────────────────────────────────────────────────────────
 
+    def tick_game_detection(self):
+        """Single game-detection poll — call from Qt main thread via QTimer on Windows."""
+        if not self._running:
+            return
+        detected_cls = self._detect_game()
+        detected_name = detected_cls.NAME if detected_cls else None
+        if detected_name != self._current_game:
+            self._on_game_change(detected_cls)
+
+    def reapply_recorder_settings(self):
+        """Restart the recorder so newly-saved settings (audio sources/tracks, codec,
+        bitrate, fps...) take effect mid-session — the recorder reads config only when
+        spawned. Runs on a background thread so saving settings doesn't block the GUI.
+        No-op when not actively recording a game."""
+        if not (self._running and self._current_game and self.config.recording_enabled):
+            return
+        game = self._current_game
+
+        def _restart():
+            try:
+                self.recorder.stop()
+                time.sleep(0.5)
+                self.recorder.start(game)
+                logger.info("Recorder restarted to apply new settings")
+            except Exception as e:
+                logger.error(f"Recorder restart after settings change failed: {e}")
+        threading.Thread(target=_restart, daemon=True, name="recorder-reapply").start()
+
     def _game_watcher(self):
         while self._running:
             detected_cls = self._detect_game()
@@ -190,18 +280,23 @@ class AppController:
 
     def _detect_game(self):
         """Return plugin class for the first detected running game, or None."""
+        import sys
         from autoclip.games.registry import detect_running_game, detect_running_game_by_cmdline
         try:
-            result = subprocess.run(
-                ["ps", "-eo", "comm="], capture_output=True, text=True)
-            procs = result.stdout.splitlines()
-            game = detect_running_game(procs)
-            if game:
-                return game
-            # Fallback: full cmdlines for Wine/Proton games whose comm is generic
-            result2 = subprocess.run(
-                ["ps", "-eo", "args="], capture_output=True, text=True)
-            return detect_running_game_by_cmdline(result2.stdout.splitlines())
+            if sys.platform == "win32":
+                procs = _list_processes_win32()
+                return detect_running_game(procs)
+            else:
+                result = subprocess.run(
+                    ["ps", "-eo", "comm="], capture_output=True, text=True)
+                procs = result.stdout.splitlines()
+                game = detect_running_game(procs)
+                if game:
+                    return game
+                # Fallback: full cmdlines for Wine/Proton games whose comm is generic
+                result2 = subprocess.run(
+                    ["ps", "-eo", "args="], capture_output=True, text=True)
+                return detect_running_game_by_cmdline(result2.stdout.splitlines())
         except Exception:
             return None
 

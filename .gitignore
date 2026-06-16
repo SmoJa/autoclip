@@ -51,3 +51,17 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+# Release artifacts (installer .exe + loose-source zips) — attached to GitHub
+# releases, not committed.
+release/
+
+# AI working notes / context dumps — not part of the app
+claude-context/
+
+# Bundled OBS runtime (libobs + embeddable python) — assembled at package time
+# from an OBS install + the Python embeddable zip, not committed (~80 MB of binaries).
+obs-runtime/
+
+# Rust build output
+target/
+

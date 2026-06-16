@@ -1,18 +1,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """
-Embedded mpv player using python-mpv's MpvRenderContext (OpenGL render API).
-Based on the official mpv Qt OpenGL example (mpv-player/mpv-examples).
-Works on Wayland by rendering into a QOpenGLWidget FBO rather than using --wid.
+Embedded mpv player.
+
+Linux:   QOpenGLWidget + MpvRenderContext (OpenGL render API).
+Windows: QWidget + --wid (native HWND / D3D11 embedding).
+
+On Windows, the OpenGL path crashes because MpvRenderContext init calls the
+get_proc_address ctypes callback ~100 times from mpv's render thread. Each call
+triggers PyGILState_Ensure() → PyThreadState_New() → heap allocation on the heap
+already corrupted by Qt's DLL initialization (Python 3.11.9 + Qt6 bug). Using
+--wid avoids MpvRenderContext entirely, so no Python callback is ever invoked from
+mpv's C threads at startup.
 """
 import ctypes
 import logging
+import sys as _sys
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtGui import QSurfaceFormat
 
 logger = logging.getLogger(__name__)
 
@@ -31,79 +38,92 @@ _HDR_VF = (
 )
 
 
-def _set_default_format():
-    """Set a permissive OpenGL format that works with NVIDIA on Wayland."""
-    fmt = QSurfaceFormat()
-    # Don't request core profile — compatibility profile works better with EGL/NVIDIA
-    fmt.setVersion(2, 1)
-    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
-    fmt.setSwapInterval(1)
-    QSurfaceFormat.setDefaultFormat(fmt)
+# ============================================================
+#  Windows implementation — native HWND embedding via --wid
+# ============================================================
 
-
-class MpvWidget(QOpenGLWidget):
+class _MpvWidgetWin32(QWidget):
     """
-    QOpenGLWidget that renders mpv video via libmpv's OpenGL render API.
-    Uses the official mpv Qt OpenGL pattern: render into defaultFramebufferObject().
+    mpv player using native Win32 HWND embedding (--wid).
+    mpv renders via D3D11 directly into our native window handle.
+    No MpvRenderContext, no ctypes callback from mpv threads.
     """
     duration_ready   = pyqtSignal(float)
     position_changed = pyqtSignal(float)
     playback_ended   = pyqtSignal()
-    _update_requested  = pyqtSignal()
-    _refresh_frame_sig = pyqtSignal()
 
     def __init__(self, parent=None):
-        _set_default_format()
         super().__init__(parent)
+        # Native HWND is required so we can pass it to mpv as --wid
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        # Tell Qt this widget paints its own background; reduces flicker
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        # Keep background black while no video is loaded
+        self.setStyleSheet("background: black;")
+
         self._mpv = None
-        self._ctx = None
-        self._duration = 0.0
         self._ready = False
+        self._duration = 0.0
         self._pending_path: Optional[Path] = None
         self._pending_is_hdr: bool = False
         self._is_hdr: bool = False
-        # Audio state — initialized here so set_audio_tracks() before GL ready works
         self._n_audio_tracks = 1
         self._track_volumes  = [1.0]
         self._track_mutes    = [False]
         self._pending_audio  = False
+        self._last_pos_emit  = 0.0
 
-        self.setMinimumHeight(200)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._update_requested.connect(self._qt_update, Qt.ConnectionType.QueuedConnection)
-        self._refresh_frame_sig.connect(self._refresh_frame, Qt.ConnectionType.QueuedConnection)
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._mpv is None:
+            self._init_mpv()
 
-    # ------------------------------------------------------------------ #
-    #  OpenGL lifecycle                                                    #
-    # ------------------------------------------------------------------ #
-
-    def initializeGL(self):
+    def _init_mpv(self):
+        import os
+        mpvnet_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "mpv.net")
+        if os.path.isdir(mpvnet_dir) and mpvnet_dir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = mpvnet_dir + os.pathsep + os.environ.get("PATH", "")
         try:
             import mpv as _mpv
-        except ImportError:
-            logger.error("python-mpv not installed")
+        except (ImportError, OSError) as e:
+            logger.error(f"python-mpv / libmpv not available: {e}")
             return
 
         try:
+            wid = int(self.winId())
             self._mpv = _mpv.MPV(
-                vo="libmpv",
+                wid=str(wid),
                 keep_open="yes",
                 pause=True,
                 really_quiet=False,
                 msg_level="all=warn",
                 hr_seek="yes",
                 force_seekable=True,
-                tone_mapping="clip",
+                tone_mapping="hable",
+                hwdec="auto-safe",
+                # Disable mpv's own input handling — Qt owns events
+                input_default_bindings=False,
+                input_vo_keyboard=False,
                 demuxer_lavf_o="fflags=+genpts+igndts,analyzeduration=20000000,probesize=50000000",
             )
-            # Note: _n_audio_tracks, _track_volumes, _track_mutes, _pending_audio
-            # are initialized in __init__ and NOT reset here so pre-GL set_audio_tracks() works
 
-            # Observe properties
             @self._mpv.property_observer("time-pos")
             def _on_pos(name, value):
-                if value is not None:
-                    self.position_changed.emit(float(value))
+                # time-pos fires per video frame on mpv's event thread. Emitting a
+                # cross-thread Qt signal that often (30-60/s) floods the GUI event
+                # loop — laggy/double-clicks and a stuttering playhead. Throttle to
+                # ~15/s, which is plenty smooth for a playhead.
+                if value is None:
+                    return
+                import time as _t
+                now = _t.monotonic()
+                if now - self._last_pos_emit < 0.066:
+                    return
+                self._last_pos_emit = now
+                self.position_changed.emit(float(value))
 
             @self._mpv.property_observer("duration")
             def _on_dur(name, value):
@@ -111,56 +131,18 @@ class MpvWidget(QOpenGLWidget):
                 if value is not None:
                     self._duration = float(value)
                     self.duration_ready.emit(float(value))
-                    # Always apply audio filter when file loads — covers both
-                    # the pending case and the race where duration fires fast
                     if self._n_audio_tracks > 1:
                         logger.info("Applying audio filter on duration ready")
                         self._apply_audio_filter()
                     self._pending_audio = False
-                    # Refresh first frame so HDR tone-mapping pipeline is applied
-                    self._refresh_frame_sig.emit()
 
             @self._mpv.event_callback("end-file")
             def _on_end(event):
                 self.playback_ended.emit()
 
-            # Build render context — proc address callback must be a ctypes function
-            from PyQt6.QtGui import QOpenGLContext as _QGLCtx
-            _MpvGlGetProcAddressFn = ctypes.CFUNCTYPE(
-                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p
-            )
-
-            def _get_proc_addr_py(_, name):
-                ctx = _QGLCtx.currentContext()
-                if ctx is None:
-                    return None
-                fn = ctx.getProcAddress(name)
-                return ctypes.cast(int(fn), ctypes.c_void_p).value if fn else None
-
-            self._proc_addr_fn = _MpvGlGetProcAddressFn(_get_proc_addr_py)
-
-            self._ctx = _mpv.MpvRenderContext(
-                self._mpv,
-                "opengl",
-                opengl_init_params={"get_proc_address": self._proc_addr_fn},
-            )
-            self._ctx.update_cb = self._on_mpv_update
-
             self._ready = True
-            logger.info("mpv OpenGL render context ready")
+            logger.info(f"mpv WID render context ready (wid={wid:#x})")
 
-            # Fallback render timer — ensures frames are painted even if
-            # the update callback is missed (XWayland quirk)
-            self._render_timer = QTimer(self)
-            self._render_timer.setInterval(16)  # ~60fps
-            self._render_timer.timeout.connect(self._force_repaint)
-            self._render_timer.start()
-
-            # Load pending file — deferred so initializeGL fully returns first.
-            # Playing inside initializeGL (before Qt finishes GL setup) causes
-            # the first render to show garbled frames; deferring to the next
-            # event loop tick avoids that race.
-            logger.info(f"GL ready — pending={self._pending_path}")
             if self._pending_path:
                 path = self._pending_path
                 self._pending_path = None
@@ -168,52 +150,14 @@ class MpvWidget(QOpenGLWidget):
                 logger.info("Pending path deferred")
 
         except Exception as e:
-            logger.error(f"mpv GL init failed: {e}")
+            logger.error(f"mpv WID init failed: {e}")
             self._ready = False
 
-    def paintGL(self):
-        if not self._ready or self._ctx is None:
-            return
-        try:
-            fbo = self.defaultFramebufferObject()
-            self._ctx.render(
-                flip_y=True,
-                opengl_fbo={"fbo": fbo, "w": self.width(), "h": self.height()},
-            )
-        except Exception as e:
-            logger.debug(f"paintGL: {e}")
-
-    def _on_mpv_update(self):
-        # Called from mpv thread — emit signal to safely dispatch to Qt main thread
-        self._update_requested.emit()
-
-    def _qt_update(self):
-        if not self._ready or not self._ctx:
-            return
-        if self._ctx.update():
-            if self.window().isMinimized():
-                self.makeCurrent()
-                self.paintGL()
-                self.context().swapBuffers(self.context().surface())
-                self.doneCurrent()
-            else:
-                # repaint() is synchronous and works under XWayland
-                # unlike update() which may be deferred indefinitely
-                self.repaint()
-
-    # ------------------------------------------------------------------ #
-    #  Playback control                                                    #
-    # ------------------------------------------------------------------ #
-
-    def set_audio_tracks(self, n_tracks: int,
-                         volumes: list = None, mutes: list = None):
-        """Store track config and apply lavfi filter once mpv has loaded the file."""
+    def set_audio_tracks(self, n_tracks: int, volumes=None, mutes=None):
         self._n_audio_tracks = n_tracks
         self._track_volumes  = volumes if volumes else [1.0] * n_tracks
         self._track_mutes    = mutes   if mutes   else [False] * n_tracks
         logger.info(f"set_audio_tracks: n={n_tracks} ready={self._ready}")
-        # If file already loaded (duration known) apply immediately
-        # Otherwise set flag — duration observer will apply it
         if self._ready and self._mpv:
             try:
                 if self._mpv.duration:
@@ -236,14 +180,10 @@ class MpvWidget(QOpenGLWidget):
             self._apply_audio_filter()
 
     def _apply_audio_filter(self):
-        """Build and apply lavfi amix filter for all audio tracks."""
         if not self._ready or not self._mpv:
             return
         n = self._n_audio_tracks
         if n <= 1:
-            # Clear any stale multi-track lavfi-complex from the previous clip —
-            # if left active it references aid2/aid3 that don't exist in single-track
-            # files, causing mpv to silently fail to load the file entirely.
             try:
                 self._mpv["lavfi-complex"] = ""
             except Exception:
@@ -254,8 +194,6 @@ class MpvWidget(QOpenGLWidget):
             except Exception:
                 pass
             return
-        # Build lavfi filter chain:
-        # [aid1]volume=v1[a0];[aid2]volume=v2[a1];[a0][a1]amix=inputs=2:normalize=0[ao]
         parts  = []
         inputs = []
         for i in range(n):
@@ -315,7 +253,6 @@ class MpvWidget(QOpenGLWidget):
         if self._ready and self._mpv:
             try:
                 self._mpv.seek(secs, "absolute")
-                # Force frame update while paused — mpv won't redraw otherwise
                 if self._mpv.pause:
                     try:
                         self._mpv.command("frame-step")
@@ -344,8 +281,6 @@ class MpvWidget(QOpenGLWidget):
                 pass
 
     def _refresh_frame(self):
-        """Step forward+back to force mpv to re-render the current frame.
-        Called via signal after file load so HDR tone-mapping is fully initialized."""
         if not (self._ready and self._mpv):
             return
         try:
@@ -354,20 +289,7 @@ class MpvWidget(QOpenGLWidget):
         except Exception:
             pass
 
-    def _force_repaint(self):
-        if self._ready and self._ctx and self._ctx.update():
-            self.repaint()
-
     def cleanup(self):
-        if hasattr(self, '_render_timer') and self._render_timer:
-            self._render_timer.stop()
-        if self._ctx:
-            try:
-                self._ctx.update_cb = None
-                del self._ctx
-            except Exception:
-                pass
-            self._ctx = None
         if self._mpv:
             try:
                 self._mpv.terminate()
@@ -384,6 +306,336 @@ class MpvWidget(QOpenGLWidget):
     @property
     def duration(self) -> float:
         return self._duration
+
+
+# ============================================================
+#  Linux implementation — OpenGL render context
+# ============================================================
+
+def _set_default_format():
+    """Set a permissive OpenGL format that works with NVIDIA on Wayland."""
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget as _qog
+    from PyQt6.QtGui import QSurfaceFormat
+    fmt = QSurfaceFormat()
+    fmt.setVersion(2, 1)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    fmt.setSwapInterval(1)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
+
+if _sys.platform != "win32":
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget as _QOpenGLWidget
+
+    class _MpvWidgetLinux(_QOpenGLWidget):
+        """
+        QOpenGLWidget that renders mpv video via libmpv's OpenGL render API.
+        """
+        duration_ready   = pyqtSignal(float)
+        position_changed = pyqtSignal(float)
+        playback_ended   = pyqtSignal()
+        _update_requested  = pyqtSignal()
+        _refresh_frame_sig = pyqtSignal()
+
+        def __init__(self, parent=None):
+            _set_default_format()
+            super().__init__(parent)
+            self._mpv = None
+            self._ctx = None
+            self._duration = 0.0
+            self._ready = False
+            self._pending_path: Optional[Path] = None
+            self._pending_is_hdr: bool = False
+            self._is_hdr: bool = False
+            self._n_audio_tracks = 1
+            self._track_volumes  = [1.0]
+            self._track_mutes    = [False]
+            self._pending_audio  = False
+
+            self.setMinimumHeight(200)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self._update_requested.connect(self._qt_update, Qt.ConnectionType.QueuedConnection)
+            self._refresh_frame_sig.connect(self._refresh_frame, Qt.ConnectionType.QueuedConnection)
+
+        def initializeGL(self):
+            try:
+                import mpv as _mpv
+            except (ImportError, OSError) as e:
+                logger.error(f"python-mpv / libmpv not available: {e}")
+                return
+
+            try:
+                self._mpv = _mpv.MPV(
+                    vo="libmpv",
+                    keep_open="yes",
+                    pause=True,
+                    really_quiet=False,
+                    msg_level="all=warn",
+                    hr_seek="yes",
+                    force_seekable=True,
+                    tone_mapping="hable",
+                    hwdec="auto-safe",
+                    demuxer_lavf_o="fflags=+genpts+igndts,analyzeduration=20000000,probesize=50000000",
+                )
+
+                @self._mpv.property_observer("time-pos")
+                def _on_pos(name, value):
+                    if value is not None:
+                        self.position_changed.emit(float(value))
+
+                @self._mpv.property_observer("duration")
+                def _on_dur(name, value):
+                    logger.info(f"mpv duration: {value} pending_audio={self._pending_audio} n_tracks={self._n_audio_tracks}")
+                    if value is not None:
+                        self._duration = float(value)
+                        self.duration_ready.emit(float(value))
+                        if self._n_audio_tracks > 1:
+                            logger.info("Applying audio filter on duration ready")
+                            self._apply_audio_filter()
+                        self._pending_audio = False
+                        self._refresh_frame_sig.emit()
+
+                @self._mpv.event_callback("end-file")
+                def _on_end(event):
+                    self.playback_ended.emit()
+
+                from PyQt6.QtGui import QOpenGLContext as _QGLCtx
+                _MpvGlGetProcAddressFn = ctypes.CFUNCTYPE(
+                    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p
+                )
+
+                def _get_proc_addr_py(_, name):
+                    ctx = _QGLCtx.currentContext()
+                    if ctx is None:
+                        return None
+                    fn = ctx.getProcAddress(name)
+                    return ctypes.cast(int(fn), ctypes.c_void_p).value if fn else None
+
+                self._proc_addr_fn = _MpvGlGetProcAddressFn(_get_proc_addr_py)
+
+                self._ctx = _mpv.MpvRenderContext(
+                    self._mpv,
+                    "opengl",
+                    opengl_init_params={"get_proc_address": self._proc_addr_fn},
+                )
+                self._ctx.update_cb = self._on_mpv_update
+
+                self._ready = True
+                logger.info("mpv OpenGL render context ready")
+
+                self._render_timer = QTimer(self)
+                self._render_timer.setInterval(16)
+                self._render_timer.timeout.connect(self._force_repaint)
+                self._render_timer.start()
+
+                logger.info(f"GL ready — pending={self._pending_path}")
+                if self._pending_path:
+                    path = self._pending_path
+                    self._pending_path = None
+                    QTimer.singleShot(0, lambda p=path: self._play_pending(p))
+                    logger.info("Pending path deferred")
+
+            except Exception as e:
+                logger.error(f"mpv GL init failed: {e}")
+                self._ready = False
+
+        def paintGL(self):
+            if not self._ready or self._ctx is None:
+                return
+            try:
+                fbo = self.defaultFramebufferObject()
+                self._ctx.render(
+                    flip_y=True,
+                    opengl_fbo={"fbo": fbo, "w": self.width(), "h": self.height()},
+                )
+            except Exception as e:
+                logger.debug(f"paintGL: {e}")
+
+        def _on_mpv_update(self):
+            self._update_requested.emit()
+
+        def _qt_update(self):
+            if not self._ready or not self._ctx:
+                return
+            if self._ctx.update():
+                if self.window().isMinimized():
+                    self.makeCurrent()
+                    self.paintGL()
+                    self.context().swapBuffers(self.context().surface())
+                    self.doneCurrent()
+                else:
+                    self.repaint()
+
+        def set_audio_tracks(self, n_tracks: int, volumes=None, mutes=None):
+            self._n_audio_tracks = n_tracks
+            self._track_volumes  = volumes if volumes else [1.0] * n_tracks
+            self._track_mutes    = mutes   if mutes   else [False] * n_tracks
+            logger.info(f"set_audio_tracks: n={n_tracks} ready={self._ready}")
+            if self._ready and self._mpv:
+                try:
+                    if self._mpv.duration:
+                        logger.info("set_audio_tracks: duration known, applying now")
+                        self._apply_audio_filter()
+                        return
+                except Exception:
+                    pass
+            logger.info("set_audio_tracks: setting _pending_audio=True")
+            self._pending_audio = True
+
+        def set_track_volume(self, idx: int, volume: float):
+            if idx < len(self._track_volumes):
+                self._track_volumes[idx] = volume
+                self._apply_audio_filter()
+
+        def set_track_mute(self, idx: int, muted: bool):
+            if idx < len(self._track_mutes):
+                self._track_mutes[idx] = muted
+                self._apply_audio_filter()
+
+        def _apply_audio_filter(self):
+            if not self._ready or not self._mpv:
+                return
+            n = self._n_audio_tracks
+            if n <= 1:
+                try:
+                    self._mpv["lavfi-complex"] = ""
+                except Exception:
+                    pass
+                vol = 0.0 if self._track_mutes[0] else self._track_volumes[0]
+                try:
+                    self._mpv.volume = vol * 100
+                except Exception:
+                    pass
+                return
+            parts  = []
+            inputs = []
+            for i in range(n):
+                vol = 0.0 if self._track_mutes[i] else self._track_volumes[i]
+                parts.append(f"[aid{i+1}]volume={vol:.3f}[a{i}]")
+                inputs.append(f"[a{i}]")
+            mix = f"{''.join(inputs)}amix=inputs={n}:normalize=0[ao]"
+            graph = ";".join(parts) + ";" + mix
+            logger.info(f"Applying lavfi: n_tracks={n} graph={graph}")
+            try:
+                self._mpv["lavfi-complex"] = graph
+                logger.info("lavfi-complex set OK")
+            except Exception as e:
+                logger.warning(f"lavfi filter failed: {e}")
+
+        def _play_pending(self, path):
+            if not (self._ready and self._mpv):
+                return
+            try:
+                self._is_hdr = self._pending_is_hdr
+                self._apply_audio_filter()
+                self._mpv.pause = True
+                self._mpv.play(str(path))
+                self._mpv.pause = True
+                logger.info(f"Pending path played: {path}")
+            except Exception as e:
+                logger.error(f"Pending play failed: {e}")
+
+        def load(self, path: Path, is_hdr: bool = False):
+            self._duration = 0.0
+            self._is_hdr = is_hdr
+            self._pending_is_hdr = is_hdr
+            logger.info(f"Player.load called: ready={self._ready} path={path} is_hdr={is_hdr}")
+            if not self._ready:
+                self._pending_path = path
+                logger.info("mpv not ready, queuing path")
+                return
+            logger.info(f"Calling mpv.play: {path}")
+            try:
+                self._apply_audio_filter()
+                self._mpv.pause = True
+                self._mpv.play(str(path))
+                self._mpv.pause = True
+                logger.info("mpv.play() called OK")
+            except Exception as e:
+                logger.error(f"mpv play: {e}")
+
+        def play_pause(self):
+            if self._ready and self._mpv:
+                self._mpv.pause = not self._mpv.pause
+
+        def pause(self):
+            if self._ready and self._mpv:
+                self._mpv.pause = True
+
+        def seek(self, secs: float):
+            if self._ready and self._mpv:
+                try:
+                    self._mpv.seek(secs, "absolute")
+                    if self._mpv.pause:
+                        try:
+                            self._mpv.command("frame-step")
+                            self._mpv.command("frame-back-step")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        def seek_norm(self, norm: float):
+            if self._duration > 0:
+                self.seek(norm * self._duration)
+
+        def frame_step(self, forward: bool = True):
+            if self._ready and self._mpv:
+                try:
+                    self._mpv.command("frame-step" if forward else "frame-back-step")
+                except Exception:
+                    pass
+
+        def stop(self):
+            if self._ready and self._mpv:
+                try:
+                    self._mpv.stop()
+                except Exception:
+                    pass
+
+        def _refresh_frame(self):
+            if not (self._ready and self._mpv):
+                return
+            try:
+                self._mpv.command("frame-step")
+                self._mpv.command("frame-back-step")
+            except Exception:
+                pass
+
+        def _force_repaint(self):
+            if self._ready and self._ctx:
+                self._ctx.update()
+                self.repaint()
+
+        def cleanup(self):
+            if hasattr(self, '_render_timer') and self._render_timer:
+                self._render_timer.stop()
+            if self._ctx:
+                try:
+                    self._ctx.update_cb = None
+                    del self._ctx
+                except Exception:
+                    pass
+                self._ctx = None
+            if self._mpv:
+                try:
+                    self._mpv.terminate()
+                    del self._mpv
+                except Exception:
+                    pass
+                self._mpv = None
+            self._ready = False
+
+        def closeEvent(self, e):
+            self.cleanup()
+            super().closeEvent(e)
+
+        @property
+        def duration(self) -> float:
+            return self._duration
+
+
+# Select implementation at module load time
+MpvWidget = _MpvWidgetWin32 if _sys.platform == "win32" else _MpvWidgetLinux
 
 
 class MpvPlayer:

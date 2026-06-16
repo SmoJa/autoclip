@@ -1,23 +1,34 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
+import sys
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import List
 
-CONFIG_PATH = Path.home() / ".config" / "autoclip" / "config.json"
+
+def _platform_config_dir() -> Path:
+    if sys.platform == "win32":
+        import os
+        return Path(os.environ.get("APPDATA", Path.home())) / "autoclip"
+    return Path.home() / ".config" / "autoclip"
+
+
+CONFIG_DIR  = _platform_config_dir()
+CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
 @dataclass
 class Config:
     recording_enabled: bool = True
     record_without_game: bool = False   # keep gsr running even when no game detected
+    start_minimized: bool = False       # launch hidden to the system tray (boot-start users)
     output_dir: str = str(Path.home() / "Videos" / "Autoclip")
     clip_length_seconds: int = 30
     post_event_seconds: int = 7
     manual_hotkey: str = "<ctrl>+<shift>+s"
 
     # Recorder
-    gpu_recorder_path: str = "/usr/local/bin/gpu-screen-recorder"
+    gpu_recorder_path: str = "" if sys.platform == "win32" else "/usr/local/bin/gpu-screen-recorder"
     exports_dir: str = ""
     monitor: str = "screen"
     capture_mode: str = "monitor"
@@ -26,7 +37,7 @@ class Config:
     audio_track_mode: str = "separate"   # "separate"|"mixed_immediate"|"mixed_deferred"
     separate_audio_tracks: bool = True   # legacy
 
-    # Encoding
+    # Encoding (shared)
     gpu_recorder_codec: str = ""
     gpu_recorder_quality_mode: str = "cbr"
     gpu_recorder_bitrate_kbps: int = 30000
@@ -34,6 +45,19 @@ class Config:
     gpu_recorder_fps: int = 60
     gpu_recorder_color_range: str = "full"
     gpu_recorder_tune: str = "quality"
+
+    # Encoding (Windows / libobs-NVENC only — gsr ignores these).
+    # Defaults are coherent with the "balanced" preset below.
+    # encoding_preset is the Tier-A named preset ("custom" once the user tweaks a knob).
+    encoding_preset: str = "balanced"        # quality|balanced|performance|storage|custom
+    nvenc_rate_control: str = "cqp"          # cbr|vbr|cqp
+    nvenc_cq_level: int = 22                  # 0–51, lower = better (CQP mode)
+    nvenc_max_bitrate_kbps: int = 60000      # VBR ceiling
+    nvenc_preset: str = "p5"                 # p1 (fastest) … p7 (best quality)
+    nvenc_multipass: str = "qres"            # disabled|qres|fullres
+    nvenc_profile: str = "auto"              # auto|baseline|main|high|main10
+    nvenc_bframes: int = 2                   # 0–4
+    encoding_initialized: bool = False       # set once hardware-aware defaults are applied
 
     # Appearance
     theme: str = "dark_orange"
@@ -53,14 +77,14 @@ class Config:
         return [
             {"label": "Game",  "device": "", "enabled": True,
              "track_type": "game",  "volume": 1.0, "muted": False},
-            {"label": "Mic",   "device": "", "enabled": False,
+            {"label": "Mic",   "device": "", "enabled": True,
              "track_type": "mic",   "volume": 1.0, "muted": False},
-            {"label": "Chat",  "device": "", "enabled": False,
+            {"label": "Chat",  "device": "", "enabled": True,
              "track_type": "chat",  "volume": 1.0, "muted": False},
         ]
 
     def save(self):
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if self.audio_tracks is None:
             self.audio_tracks = self._default_audio_tracks()
         data = {
@@ -149,3 +173,29 @@ class Config:
         self._audio_trigger_configs[name] = obj
         # Expose as attribute: config.laughter, config.sensevoice, etc.
         setattr(self, name.lower(), obj)
+
+
+# Tier-A named encoding presets (Windows / NVENC). Shared by the settings UI and
+# the first-run hardware-aware default. Values: (rate_control, cq, bitrate_kbps,
+# nvenc_preset, multipass).
+ENCODING_PRESETS = {
+    "quality":     ("cqp", 18, 30000, "p6", "fullres"),
+    "balanced":    ("cqp", 22, 30000, "p5", "qres"),
+    "performance": ("cbr", 22, 30000, "p4", "disabled"),
+    "storage":     ("cqp", 28, 20000, "p5", "qres"),
+}
+
+
+def apply_encoding_preset(cfg, name: str) -> bool:
+    """Write a named preset's knobs into cfg (NVENC fields). Returns True if applied."""
+    spec = ENCODING_PRESETS.get(name)
+    if not spec:
+        return False
+    rc, cq, br, preset, multipass = spec
+    cfg.nvenc_rate_control = rc
+    cfg.nvenc_cq_level = cq
+    cfg.gpu_recorder_bitrate_kbps = br
+    cfg.nvenc_preset = preset
+    cfg.nvenc_multipass = multipass
+    cfg.encoding_preset = name
+    return True

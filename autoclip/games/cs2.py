@@ -552,15 +552,19 @@ class GSIServer:
             self._server = None
 
     def install_cs2_config(self) -> bool:
-        import os
+        import os, sys
+        _cs2_cfg = "Counter-Strike Global Offensive/game/core/cfg"
         paths = [
-            os.path.expanduser(
-                "~/.steam/steam/steamapps/common/"
-                "Counter-Strike Global Offensive/game/core/cfg"),
-            os.path.expanduser(
-                "~/.local/share/Steam/steamapps/common/"
-                "Counter-Strike Global Offensive/game/core/cfg"),
+            os.path.expanduser(f"~/.steam/steam/steamapps/common/{_cs2_cfg}"),
+            os.path.expanduser(f"~/.local/share/Steam/steamapps/common/{_cs2_cfg}"),
         ]
+        if sys.platform == "win32":
+            paths += [
+                os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+                             f"Steam\\steamapps\\common\\{_cs2_cfg}"),
+                os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"),
+                             f"Steam\\steamapps\\common\\{_cs2_cfg}"),
+            ]
         cfg = f'''// AutoClip CS2 GSI Config
 "autoclip"
 {{
@@ -594,15 +598,20 @@ class GSIServer:
         return False
 
     def find_cs2_cfg_path(self) -> Optional[str]:
-        import os
-        for p in [
-            os.path.expanduser(
-                "~/.steam/steam/steamapps/common/"
-                "Counter-Strike Global Offensive/game/core/cfg"),
-            os.path.expanduser(
-                "~/.local/share/Steam/steamapps/common/"
-                "Counter-Strike Global Offensive/game/core/cfg"),
-        ]:
+        import os, sys
+        _cs2_cfg = "Counter-Strike Global Offensive/game/core/cfg"
+        candidates = [
+            os.path.expanduser(f"~/.steam/steam/steamapps/common/{_cs2_cfg}"),
+            os.path.expanduser(f"~/.local/share/Steam/steamapps/common/{_cs2_cfg}"),
+        ]
+        if sys.platform == "win32":
+            candidates += [
+                os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+                             f"Steam\\steamapps\\common\\{_cs2_cfg}"),
+                os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"),
+                             f"Steam\\steamapps\\common\\{_cs2_cfg}"),
+            ]
+        for p in candidates:
             if os.path.isdir(p):
                 return p
         return None
@@ -701,7 +710,10 @@ class CS2Tab:
 
             def _on_result(device):
                 resolve_btn.setEnabled(True)
-                if device:
+                if device == "__windows_manual__":
+                    w.audio_status.setText("Select device manually in the Audio tab")
+                    w.audio_status.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+                elif device:
                     tracks = config.audio_tracks or []
                     for track in tracks:
                         if isinstance(track, dict) and track.get("track_type") == "game":
@@ -717,7 +729,10 @@ class CS2Tab:
             sig.result.connect(_on_result)
 
             def _run():
-                import logging as _log
+                import sys, logging as _log
+                if sys.platform == "win32":
+                    sig.result.emit("__windows_manual__")
+                    return
                 device = None
                 try:
                     from autoclip.core.audio import resolve_game_audio_node
