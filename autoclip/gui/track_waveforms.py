@@ -5,12 +5,16 @@ Probes stream count, extracts per-track waveforms, and emits results upstream.
 Volume/mute controls are rendered as VolumeDial children of TimelineWidget.
 """
 import subprocess
+import sys
 import threading
 import logging
 import numpy as np
 from typing import List, Dict
 
+from autoclip.core.clips import _run_capture
+
 from PyQt6.QtCore import QObject, pyqtSignal
+from autoclip.core.clips import _FFMPEG, _FFPROBE
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +45,13 @@ class MultiTrackWaveform(QObject):
             return
 
         try:
-            r = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a",
+            stdout, _, _ = _run_capture(
+                [_FFPROBE, "-v", "error", "-select_streams", "a",
                  "-show_entries", "stream=index",
                  "-of", "csv=p=0", str(clip_path)],
-                capture_output=True, text=True, timeout=10
+                timeout=10,
             )
-            n = len([l for l in r.stdout.splitlines() if l.strip()])
+            n = len([l for l in stdout.splitlines() if l.strip()])
         except Exception:
             n = 1
         if n == 0:
@@ -99,7 +103,7 @@ class MultiTrackWaveform(QObject):
 def _extract_track_waveform(path, track_index: int, num_samples: int = 600) -> np.ndarray:
     try:
         cmd = [
-            "ffmpeg", "-v", "error",
+            _FFMPEG, "-v", "error",
             "-i", str(path),
             "-vn",
             "-map", f"0:a:{track_index}",
@@ -108,10 +112,23 @@ def _extract_track_waveform(path, track_index: int, num_samples: int = 600) -> n
             "-f", "f32le",
             "-",
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
-        if not result.stdout or len(result.stdout) < 4:
+        import tempfile
+        with tempfile.TemporaryFile() as out_f:
+            flags = {}
+            if sys.platform == "win32":
+                flags = {"stdin": subprocess.DEVNULL,
+                         "creationflags": subprocess.CREATE_NO_WINDOW}
+            proc = subprocess.Popen(cmd, stdout=out_f, stderr=subprocess.DEVNULL, **flags)
+            try:
+                proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            out_f.seek(0)
+            raw = out_f.read()
+        if not raw or len(raw) < 4:
             return np.zeros(num_samples)
-        data = np.frombuffer(result.stdout, dtype=np.float32)
+        data = np.frombuffer(raw, dtype=np.float32)
         if len(data) < num_samples:
             return np.zeros(num_samples)
         chunk_size = max(1, len(data) // num_samples)

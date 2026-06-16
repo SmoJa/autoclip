@@ -13,6 +13,7 @@ import subprocess
 import threading
 import logging
 import time
+from autoclip.core.clips import _FFPROBE, _FFMPEG
 from pathlib import Path
 from typing import List, Optional, Callable
 
@@ -25,14 +26,15 @@ def mix_audio_tracks(clip_path: Path) -> bool:
     Video is stream-copied. Returns True on success.
     """
     try:
+        from autoclip.core.clips import _run_capture
         # Probe how many audio streams the clip has
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a",
+        stdout, _, _ = _run_capture(
+            [_FFPROBE, "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=index",
              "-of", "csv=p=0", str(clip_path)],
-            capture_output=True, text=True, timeout=10
+            timeout=10
         )
-        n_audio = len([l for l in r.stdout.splitlines() if l.strip()])
+        n_audio = len([l for l in stdout.splitlines() if l.strip()])
 
         if n_audio <= 1:
             logger.debug(f"Only {n_audio} audio track(s) — no mix needed: {clip_path.name}")
@@ -49,7 +51,7 @@ def mix_audio_tracks(clip_path: Path) -> bool:
         filter_complex = f"{filter_inputs}amix=inputs={n_audio}:normalize=0:duration=longest[aout]"
 
         cmd = [
-            "ffmpeg", "-y", "-v", "error",
+            _FFMPEG, "-y", "-v", "error",
             "-i", str(clip_path),
             "-filter_complex", filter_complex,
             "-map", "0:v",
@@ -61,11 +63,10 @@ def mix_audio_tracks(clip_path: Path) -> bool:
         ]
 
         logger.info(f"Mixing {n_audio} audio tracks: {clip_path.name}")
-        result = subprocess.run(cmd, timeout=120, capture_output=True)
+        _, stderr, rc = _run_capture(cmd, timeout=120)
 
-        if result.returncode != 0:
-            err = result.stderr.decode(errors="replace")
-            logger.error(f"Audio mix failed: {err[:200]}")
+        if rc != 0:
+            logger.error(f"Audio mix failed: {stderr[:200]}")
             if tmp_path.exists():
                 tmp_path.unlink()
             return False

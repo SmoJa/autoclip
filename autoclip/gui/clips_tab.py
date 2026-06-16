@@ -5,10 +5,21 @@ Clip management tab.
 - Clip view: full-tab embedded mpv player with timeline, waveform, trim, SDR export
 """
 import subprocess
+import sys
 import logging
 import threading
 import queue
 from pathlib import Path
+
+from autoclip.core.clips import _run_capture
+
+_SUBPROCESS_FLAGS: dict = {}
+if sys.platform == "win32":
+    _SUBPROCESS_FLAGS = {
+        "stdin": subprocess.DEVNULL,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
+from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QLineEdit, QProgressBar, QMessageBox,
@@ -48,15 +59,32 @@ _WEAPON_NAMES = {
 logger = logging.getLogger(__name__)
 
 # Thumbnail cache
-_THUMB_DIR = Path.home() / ".cache" / "autoclip" / "thumbs"
+import sys as _sys
+if _sys.platform == "win32":
+    import os as _os
+    _THUMB_DIR = Path(_os.environ.get("LOCALAPPDATA", Path.home())) / "autoclip" / "thumbs"
+else:
+    _THUMB_DIR = Path.home() / ".cache" / "autoclip" / "thumbs"
 _THUMB_DIR.mkdir(parents=True, exist_ok=True)
 
 # Single worker thread for thumbnail generation — prevents ffmpeg overload
 _thumb_queue: queue.Queue = queue.Queue()
 
 def _thumb_worker():
+    import time as _time
     while True:
-        fn = _thumb_queue.get()
+        # On Windows, queue.Queue.get() allocates a new Python lock object every
+        # time it blocks, using the heap that Qt has corrupted (Python 3.11.9 bug).
+        # Use get_nowait() + time.sleep() polling instead — time.sleep() uses a
+        # process-wide event handle (created before Qt) and never allocates locks.
+        if _sys.platform == "win32":
+            try:
+                fn = _thumb_queue.get_nowait()
+            except queue.Empty:
+                _time.sleep(0.05)
+                continue
+        else:
+            fn = _thumb_queue.get()
         try:
             fn()
         except Exception:
@@ -124,6 +152,7 @@ def _get_thumbnail(clip_path: Path, w: int = None, h: int = None,
     is_hdr: apply tone-mapping only if clip is actually HDR.
     """
     from PyQt6.QtGui import QPixmap as _QPixmap
+    from autoclip.core.clips import _FFMPEG as _FF
     import hashlib, subprocess
     if w is None: w = CARD_W
     if h is None: h = CARD_H
@@ -147,33 +176,34 @@ def _get_thumbnail(clip_path: Path, w: int = None, h: int = None,
                     f"{crop}"
                 )
             else:
-                vf = crop
+                vf = f"format=yuv420p,{crop}"
 
-            result = subprocess.run([
-                "ffmpeg", "-v", "error",
+            _, stderr1, rc1 = _run_capture([
+                _FF, "-v", "error",
                 "-ss", str(seek),
                 "-i", str(clip_path),
                 "-vframes", "1",
                 "-vf", vf,
                 "-q:v", "2",
+                "-strict", "unofficial",
                 str(thumb_path)
-            ], timeout=10, capture_output=True)
+            ], timeout=15)
 
-            if result.returncode != 0 or not thumb_path.exists():
-                err = result.stderr.decode(errors="replace").strip()
-                logger.warning(f"Thumbnail failed for {clip_path.name} seek={seek}: {err or 'no output'}")
+            if rc1 != 0 or not thumb_path.exists():
+                logger.warning(f"Thumbnail failed for {clip_path.name} seek={seek}: {stderr1.strip() or 'no output'}")
 
             # Fallback to plain scale+crop if HDR tone-map failed
-            if is_hdr and (result.returncode != 0 or not thumb_path.exists()):
-                subprocess.run([
-                    "ffmpeg", "-v", "error",
+            if is_hdr and (rc1 != 0 or not thumb_path.exists()):
+                _run_capture([
+                    _FF, "-v", "error",
                     "-ss", str(seek),
                     "-i", str(clip_path),
                     "-vframes", "1",
-                    "-vf", crop,
+                    "-vf", f"format=yuv420p,{crop}",
                     "-q:v", "2",
+                    "-strict", "unofficial",
                     str(thumb_path)
-                ], timeout=10, capture_output=True)
+                ], timeout=15)
         except Exception as e:
             logger.warning(f"Thumbnail exception for {clip_path.name}: {e}")
             return None
@@ -819,10 +849,16 @@ class GridView(QWidget):
         self._selected_card = None
 
     def _open_current_folder(self):
+        import sys
         from pathlib import Path as _P
         parts = [self.config.output_dir] + self._nav
-        path = str(_P(*parts))
-        subprocess.Popen(["xdg-open", path])
+        p = _P(*parts)
+        p.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            import os
+            os.startfile(str(p))
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
 
     def _on_delete_folder(self, data):
         from pathlib import Path as _P
@@ -1343,7 +1379,8 @@ class ExportDialog(QDialog):
         if self._out_path and self._out_path.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._out_path.parent)))
         else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile("/tmp/autoclip.log"))
+            from ..core.config import CONFIG_DIR
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_DIR)))
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -1661,14 +1698,26 @@ class PlayerView(QWidget):
         )
         self._hdr_warn_lbl.setVisible(clip.is_hdr)
         self._suggested_name = clip.suggested_export_name
-        # Probe clip for HDR/duration if not yet done
-        import threading as _t
-        def _probe_and_update():
-            from ..core.clips import probe_clip
-            dur, is_hdr = probe_clip(clip.path)
-            if dur > 0: clip.duration_secs = dur
-            clip.is_hdr = is_hdr
-        _t.Thread(target=_probe_and_update, daemon=True).start()
+        # Probe clip for HDR/duration if not yet done (synchronous on Windows
+        # to avoid background-thread AV from Qt heap corruption in Python 3.11.9)
+        if clip.duration_secs == 0.0 or not hasattr(clip, '_probed'):
+            import sys as _sys
+            from ..core.clips import probe_clip as _probe_clip
+            if _sys.platform == "win32":
+                try:
+                    dur, is_hdr = _probe_clip(clip.path)
+                    if dur > 0: clip.duration_secs = dur
+                    clip.is_hdr = is_hdr
+                    clip._probed = True
+                except Exception:
+                    pass
+            else:
+                import threading as _t
+                def _probe_and_update():
+                    dur, is_hdr = _probe_clip(clip.path)
+                    if dur > 0: clip.duration_secs = dur
+                    clip.is_hdr = is_hdr
+                _t.Thread(target=_probe_and_update, daemon=True).start()
 
         # Reset timeline
         self._timeline.set_in(0.0)
@@ -1832,7 +1881,9 @@ class PlayerView(QWidget):
                 if time.monotonic() < self._seek_suppress_until:
                     return
             norm = pos / self._duration
-            QTimer.singleShot(0, lambda n=norm: self._timeline.set_position(n))
+            # _on_position already runs on the GUI thread (queued from mpv's thread);
+            # call set_position directly instead of posting another singleShot event.
+            self._timeline.set_position(norm)
 
     def _refresh_pos_label(self):
         if self._duration > 0:
@@ -2089,12 +2140,18 @@ class ClipsTab(QWidget):
         self._refresh_debounce.start()
 
     def _refresh_keep_pos(self):
-        """Refresh clip list without resetting navigation position."""
-        self._clips = scan_library(self.config.output_dir)
+        """Refresh clip list without resetting navigation position. Only rebuilds the
+        grid when the set of clips actually changed — the directory watcher can fire
+        repeatedly while recording, and rebuilding the grid every time both wastes
+        work and eats clicks that land on cards being recreated."""
+        new_clips = scan_library(self.config.output_dir)
+        self._watch_output_dir()
+        if {str(c.path) for c in new_clips} == {str(c.path) for c in self._clips}:
+            return
+        self._clips = new_clips
         self._grid_view.update_clips(self._clips)
         probe_clips_async(self._clips,
                           lambda: QTimer.singleShot(0, self._on_probe_done))
-        self._watch_output_dir()
 
     def refresh(self):
         """Refresh keeping current nav position."""

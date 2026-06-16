@@ -20,7 +20,8 @@ from typing import Dict
 logger = logging.getLogger(__name__)
 
 _BUILTIN_DIR  = Path(__file__).parent / "themes"
-_USER_DIR     = Path.home() / ".config" / "autoclip" / "themes"
+from autoclip.core.config import CONFIG_DIR as _CONFIG_DIR
+_USER_DIR     = _CONFIG_DIR / "themes"
 DEFAULT_ID    = "dark_orange"
 
 

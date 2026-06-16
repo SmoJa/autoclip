@@ -23,6 +23,25 @@ from .clips_tab import ClipsTab
 logger = logging.getLogger(__name__)
 
 
+def app_icon():
+    """The AutoClip app icon (orange circle + 'AC'). Loads the bundled .ico; falls
+    back to drawing the accent circle if the file is missing."""
+    from PyQt6.QtGui import QIcon
+    ico = Path(__file__).parent / "autoclip.ico"
+    if ico.exists():
+        return QIcon(str(ico))
+    from PyQt6.QtGui import QPixmap, QColor, QPainter
+    pm = QPixmap(32, 32)
+    pm.fill(QColor(0, 0, 0, 0))
+    p = QPainter(pm)
+    c = QColor(_theme.current.accent)
+    p.setBrush(c)
+    p.setPen(c)
+    p.drawEllipse(4, 4, 24, 24)
+    p.end()
+    return QIcon(pm)
+
+
 
 class StatusBar(QWidget):
     def __init__(self):
@@ -326,12 +345,28 @@ class RecordingTab(QWidget):
         app_l = QVBoxLayout(app_g)
         self.autostart_chk = QCheckBox("Start AutoClip automatically on login")
         self.autostart_chk.setChecked(self._is_autostart_enabled())
-        self.autostart_chk.setToolTip(
-            "Creates an autostart entry so AutoClip launches when you log in.\n"
-            "Uses XDG autostart (~/.config/autostart/autoclip.desktop)."
-        )
+        import sys as _sys
+        if _sys.platform == "win32":
+            self.autostart_chk.setToolTip(
+                "Creates a Windows startup registry entry so AutoClip launches when you log in."
+            )
+        else:
+            self.autostart_chk.setToolTip(
+                "Creates an autostart entry so AutoClip launches when you log in.\n"
+                "Uses XDG autostart (~/.config/autostart/autoclip.desktop)."
+            )
         self.autostart_chk.toggled.connect(self._on_autostart_toggled)
         app_l.addWidget(self.autostart_chk)
+
+        self.start_minimized_chk = QCheckBox("Start minimized to system tray")
+        self.start_minimized_chk.setChecked(config.start_minimized)
+        self.start_minimized_chk.setToolTip(
+            "Launch hidden in the system tray instead of showing the window.\n"
+            "Useful with 'Start automatically on login' so AutoClip starts\n"
+            "quietly on boot. Click the tray icon any time to open it."
+        )
+        self.start_minimized_chk.toggled.connect(self._mark_dirty)
+        app_l.addWidget(self.start_minimized_chk)
 
         self.record_without_game_chk = QCheckBox("Record without a game (for audio triggers)")
         self.record_without_game_chk.setChecked(config.record_without_game)
@@ -343,6 +378,27 @@ class RecordingTab(QWidget):
         self.record_without_game_chk.toggled.connect(self._mark_dirty)
         app_l.addWidget(self.record_without_game_chk)
         layout.addWidget(app_g)
+
+        # Updates — check + one-click install (no automatic/silent updates).
+        # The widgets live here (Settings tab); the logic lives on MainWindow, reached
+        # via the _main_window back-reference it sets after building this tab.
+        from .. import __version__ as _ver
+        upd_g = QGroupBox("Updates")
+        upd_l = QVBoxLayout(upd_g)
+        upd_row = QHBoxLayout()
+        self._update_status_lbl = QLabel(f"AutoClip v{_ver}")
+        self._update_status_lbl.setStyleSheet(f"color:{_theme.current.text_dim}; font-size:12px;")
+        self._update_btn = QPushButton("Check for Updates")
+        self._update_btn.setToolTip(
+            "Check GitHub for a newer release. AutoClip never updates on its own —\n"
+            "if one is found, this becomes an Install button you click when ready."
+        )
+        self._update_btn.clicked.connect(lambda: self._main_window._on_update_btn_clicked())
+        upd_row.addWidget(self._update_status_lbl)
+        upd_row.addStretch()
+        upd_row.addWidget(self._update_btn)
+        upd_l.addLayout(upd_row)
+        layout.addWidget(upd_g)
 
         # Output directory
         dir_g = QGroupBox("Output Directory")
@@ -375,71 +431,35 @@ class RecordingTab(QWidget):
         rec_l = QGridLayout(rec_g)
         rec_l.setSpacing(14)
 
-        rec_l.addWidget(QLabel("gpu-screen-recorder path"), 0, 0)
+        self._rec_path_label = QLabel("gpu-screen-recorder path")
         self.rec_path = QLineEdit(config.gpu_recorder_path)
+        import sys as _sys
+        _show_recorder_path = _sys.platform != "win32"
+        self._rec_path_label.setVisible(_show_recorder_path)
+        self.rec_path.setVisible(_show_recorder_path)
+        rec_l.addWidget(self._rec_path_label, 0, 0)
         rec_l.addWidget(self.rec_path, 0, 1)
 
-        rec_l.addWidget(QLabel("FPS"), 1, 0)
+        _fps_label = QLabel("FPS")
+        _fps_tip = ("Frames per second recorded. Match your game's framerate for\n"
+                    "smooth clips. 60 is standard; higher uses more GPU and disk.")
+        _fps_label.setToolTip(_fps_tip)
+        rec_l.addWidget(_fps_label, 1, 0)
         self.fps = NoScrollSpinBox()
         self.fps.setRange(24, 240)
         self.fps.setValue(config.gpu_recorder_fps)
+        self.fps.setToolTip(_fps_tip)
         rec_l.addWidget(self.fps, 1, 1)
 
         layout.addWidget(rec_g)
 
         # Encoding
-        enc_g = QGroupBox("Encoding")
-        enc_l = QGridLayout(enc_g)
-        enc_l.setSpacing(14)
-
-        enc_l.addWidget(QLabel("Codec"), 0, 0)
-        self.codec = NoScrollComboBox()
-        self.codec.addItems(["hevc_hdr", "av1_hdr", "hevc_10bit", "av1_10bit", "hevc", "av1", "h264"])
-        self.codec.setCurrentText(config.gpu_recorder_codec)
-        self.codec.setToolTip(
-            "hevc_hdr / av1_hdr: best for HDR displays\n"
-            "hevc / av1: SDR high quality\n"
-            "h264: most compatible"
-        )
-        enc_l.addWidget(self.codec, 0, 1)
-
-        enc_l.addWidget(QLabel("Color range"), 1, 0)
-        self.color_range = NoScrollComboBox()
-        self.color_range.addItems(["full", "limited"])
-        self.color_range.setCurrentText(config.gpu_recorder_color_range)
-        enc_l.addWidget(self.color_range, 1, 1)
-
-        enc_l.addWidget(QLabel("Bitrate mode"), 2, 0)
-        self.quality_mode = NoScrollComboBox()
-        self.quality_mode.addItems(["cbr", "vbr", "qp", "auto"])
-        self.quality_mode.setCurrentText(config.gpu_recorder_quality_mode)
-        self.quality_mode.setToolTip("cbr: recommended for replay buffer")
-        self.quality_mode.currentTextChanged.connect(self._on_mode_changed)
-        enc_l.addWidget(self.quality_mode, 2, 1)
-
-        enc_l.addWidget(QLabel("Bitrate (kbps)"), 3, 0)
-        self.bitrate = NoScrollSpinBox()
-        self.bitrate.setRange(1000, 200000)
-        self.bitrate.setSingleStep(1000)
-        self.bitrate.setValue(config.gpu_recorder_bitrate_kbps)
-        self.bitrate.setToolTip("Used for cbr/vbr. 30000 = 30 Mbps")
-        enc_l.addWidget(self.bitrate, 3, 1)
-
-        enc_l.addWidget(QLabel("Quality preset"), 4, 0)
-        self.quality_preset = NoScrollComboBox()
-        self.quality_preset.addItems(["medium", "high", "very_high", "ultra"])
-        self.quality_preset.setCurrentText(config.gpu_recorder_quality_preset)
-        self.quality_preset.setToolTip("Used for qp/auto mode")
-        enc_l.addWidget(self.quality_preset, 4, 1)
-
-        enc_l.addWidget(QLabel("Tune"), 5, 0)
-        self.tune = NoScrollComboBox()
-        self.tune.addItems(["quality", "performance"])
-        self.tune.setCurrentText(config.gpu_recorder_tune)
-        enc_l.addWidget(self.tune, 5, 1)
-
-        layout.addWidget(enc_g)
-        self._on_mode_changed(config.gpu_recorder_quality_mode)
+        import sys as _sys
+        self._is_win = _sys.platform == "win32"
+        if self._is_win:
+            self._build_encoding_windows(layout, config)
+        else:
+            self._build_encoding_linux(layout, config)
 
         # Monitor
         mon_g = QGroupBox("Display")
@@ -613,24 +633,20 @@ class RecordingTab(QWidget):
         fl.addWidget(self.save_btn)
         outer.addWidget(footer)
 
-        # Wire all reversible fields to dirty checking (auto-clears if reverted)
+        # Wire all reversible fields to dirty checking (auto-clears if reverted).
+        # Encoding fields differ per platform — each _build_encoding_* registers its
+        # own signals in self._enc_dirty_signals.
         for _sig in [
             self._theme_combo.currentIndexChanged,
             self.dir_edit.textChanged,
             self.exp_edit.textChanged,
             self.rec_path.textChanged,
             self.fps.valueChanged,
-            self.codec.currentTextChanged,
-            self.color_range.currentTextChanged,
-            self.quality_mode.currentTextChanged,
-            self.bitrate.valueChanged,
-            self.quality_preset.currentTextChanged,
-            self.tune.currentTextChanged,
             self.monitor_combo.currentTextChanged,
             self.pre.valueChanged,
             self.post.valueChanged,
             self.hotkey.textChanged,
-        ]:
+        ] + getattr(self, "_enc_dirty_signals", []):
             _sig.connect(self._check_dirty)
 
     def _check_dirty(self, *_):
@@ -648,12 +664,7 @@ class RecordingTab(QWidget):
             or self.exp_edit.text().strip()       != c.exports_dir
             or self.rec_path.text()               != c.gpu_recorder_path
             or self.fps.value()                   != c.gpu_recorder_fps
-            or self.codec.currentText()           != c.gpu_recorder_codec
-            or self.color_range.currentText()     != c.gpu_recorder_color_range
-            or self.quality_mode.currentText()    != c.gpu_recorder_quality_mode
-            or self.bitrate.value()               != c.gpu_recorder_bitrate_kbps
-            or self.quality_preset.currentText()  != c.gpu_recorder_quality_preset
-            or self.tune.currentText()            != c.gpu_recorder_tune
+            or self._encoding_changed(c)
             or self.monitor_combo.currentText()   != c.monitor
             or cur_mode                           != c.audio_track_mode
             or self.pre.value()                   != c.clip_length_seconds
@@ -697,16 +708,336 @@ class RecordingTab(QWidget):
         if current in monitors:
             self.monitor_combo.setCurrentText(current)
 
+    # ---- Encoding panels (platform-specific) -------------------------------
+
+    # Tier-A named presets -> (rate_control, cq, bitrate_kbps, nvenc_preset, multipass).
+    # Shared with the first-run hardware default in config.py.
+    from ..core.config import ENCODING_PRESETS as _ENC_PRESETS
+
+    @staticmethod
+    def _set_combo_by_data(combo, data):
+        i = combo.findData(data)
+        combo.setCurrentIndex(i if i >= 0 else 0)
+
+    def _build_encoding_linux(self, layout, config):
+        enc_g = QGroupBox("Encoding")
+        enc_l = QGridLayout(enc_g)
+        enc_l.setSpacing(14)
+
+        enc_l.addWidget(QLabel("Codec"), 0, 0)
+        self.codec = NoScrollComboBox()
+        self.codec.addItems(["hevc_hdr", "av1_hdr", "hevc_10bit", "av1_10bit", "hevc", "av1", "h264"])
+        self.codec.setToolTip(
+            "hevc_hdr / av1_hdr: best for HDR displays\n"
+            "hevc / av1: SDR high quality\n"
+            "h264: most compatible"
+        )
+        self.codec.setCurrentText(config.gpu_recorder_codec)
+        enc_l.addWidget(self.codec, 0, 1)
+
+        enc_l.addWidget(QLabel("Color range"), 1, 0)
+        self.color_range = NoScrollComboBox()
+        self.color_range.addItems(["full", "limited"])
+        self.color_range.setCurrentText(config.gpu_recorder_color_range)
+        enc_l.addWidget(self.color_range, 1, 1)
+
+        enc_l.addWidget(QLabel("Bitrate mode"), 2, 0)
+        self.quality_mode = NoScrollComboBox()
+        self.quality_mode.addItems(["cbr", "vbr", "qp", "auto"])
+        self.quality_mode.setCurrentText(config.gpu_recorder_quality_mode)
+        self.quality_mode.setToolTip("cbr: recommended for replay buffer")
+        self.quality_mode.currentTextChanged.connect(self._on_mode_changed)
+        enc_l.addWidget(self.quality_mode, 2, 1)
+
+        enc_l.addWidget(QLabel("Bitrate (kbps)"), 3, 0)
+        self.bitrate = NoScrollSpinBox()
+        self.bitrate.setRange(1000, 200000)
+        self.bitrate.setSingleStep(1000)
+        self.bitrate.setValue(config.gpu_recorder_bitrate_kbps)
+        self.bitrate.setToolTip("Used for cbr/vbr. 30000 = 30 Mbps")
+        enc_l.addWidget(self.bitrate, 3, 1)
+
+        enc_l.addWidget(QLabel("Quality preset"), 4, 0)
+        self.quality_preset = NoScrollComboBox()
+        self.quality_preset.addItems(["medium", "high", "very_high", "ultra"])
+        self.quality_preset.setCurrentText(config.gpu_recorder_quality_preset)
+        self.quality_preset.setToolTip("Used for qp/auto mode")
+        enc_l.addWidget(self.quality_preset, 4, 1)
+
+        enc_l.addWidget(QLabel("Tune"), 5, 0)
+        self.tune = NoScrollComboBox()
+        self.tune.addItems(["quality", "performance"])
+        self.tune.setCurrentText(config.gpu_recorder_tune)
+        enc_l.addWidget(self.tune, 5, 1)
+
+        layout.addWidget(enc_g)
+        self._on_mode_changed(config.gpu_recorder_quality_mode)
+        self._enc_dirty_signals = [
+            self.codec.currentTextChanged, self.color_range.currentTextChanged,
+            self.quality_mode.currentTextChanged, self.bitrate.valueChanged,
+            self.quality_preset.currentTextChanged, self.tune.currentTextChanged,
+        ]
+
+    def _build_encoding_windows(self, layout, config):
+        enc_g = QGroupBox("Encoding (NVENC)")
+        g = QGridLayout(enc_g)
+        g.setSpacing(14)
+        self._enc_row = 0
+
+        def add_row(text, widget, tip):
+            """Add a label+widget row; apply the same tooltip to both and return the label."""
+            lbl = QLabel(text)
+            lbl.setToolTip(tip)
+            widget.setToolTip(tip)
+            g.addWidget(lbl, self._enc_row, 0)
+            g.addWidget(widget, self._enc_row, 1)
+            self._enc_row += 1
+            return lbl
+
+        self.enc_preset_combo = NoScrollComboBox()
+        for lbl, data in [("Quality", "quality"), ("Balanced", "balanced"),
+                          ("Performance", "performance"), ("Storage saver", "storage"),
+                          ("Custom", "custom")]:
+            self.enc_preset_combo.addItem(lbl, data)
+        add_row("Preset", self.enc_preset_combo,
+                "One-click starting points that fill in the settings below:\n"
+                "• Quality — near-lossless, larger files (CQ 18, slow preset)\n"
+                "• Balanced — great quality, reasonable size (recommended)\n"
+                "• Performance — lowest GPU load (CBR, fast preset)\n"
+                "• Storage saver — smaller files (higher CQ)\n"
+                "Changing any setting below switches this to Custom.")
+
+        self.codec = NoScrollComboBox()
+        self.codec.addItems(["hevc", "h264", "av1"])
+        self.codec.setCurrentText(config.gpu_recorder_codec or "hevc")
+        add_row("Codec", self.codec,
+                "Video compression format:\n"
+                "• hevc (H.265) — best quality for the size (recommended)\n"
+                "• h264 — largest files but plays everywhere\n"
+                "• av1 — smallest files; needs RTX 40-series / RX 7000+")
+
+        self.nvenc_rc = NoScrollComboBox()
+        for lbl, data in [("CQP — constant quality", "cqp"),
+                          ("CBR — constant bitrate", "cbr"),
+                          ("VBR — variable bitrate", "vbr")]:
+            self.nvenc_rc.addItem(lbl, data)
+        add_row("Rate control", self.nvenc_rc,
+                "How the encoder spends data:\n"
+                "• CQP — holds a constant quality; file size varies. Best for clips.\n"
+                "• CBR — holds a constant bitrate; predictable file size.\n"
+                "• VBR — varies the bitrate up to a ceiling.")
+
+        self.bitrate = NoScrollSpinBox()
+        self.bitrate.setRange(1000, 200000); self.bitrate.setSingleStep(1000)
+        self.bitrate.setValue(config.gpu_recorder_bitrate_kbps)
+        self._lbl_bitrate = add_row("Bitrate (kbps)", self.bitrate,
+                "Target data rate for CBR/VBR. Higher = better quality and bigger\n"
+                "files. 30000 = 30 Mbps, a good 1440p/60 starting point.")
+
+        self.nvenc_maxbitrate = NoScrollSpinBox()
+        self.nvenc_maxbitrate.setRange(1000, 400000); self.nvenc_maxbitrate.setSingleStep(1000)
+        self.nvenc_maxbitrate.setValue(config.nvenc_max_bitrate_kbps)
+        self._lbl_maxbitrate = add_row("Max bitrate (kbps)", self.nvenc_maxbitrate,
+                "VBR only: the ceiling the bitrate may spike to during busy,\n"
+                "fast-moving scenes. Keep it above the target bitrate.")
+
+        self.nvenc_cq = NoScrollSpinBox()
+        self.nvenc_cq.setRange(0, 51)
+        self.nvenc_cq.setValue(config.nvenc_cq_level)
+        self._lbl_cq = add_row("Quality (CQ)", self.nvenc_cq,
+                "CQP only: the quality target. Lower = better quality and bigger\n"
+                "files. 18–24 is a good range; 22 is a solid default.")
+
+        self.nvenc_preset_combo = NoScrollComboBox()
+        for data, lbl in [("p1", "P1 — fastest"), ("p2", "P2"), ("p3", "P3"), ("p4", "P4"),
+                          ("p5", "P5 — balanced"), ("p6", "P6"), ("p7", "P7 — best quality")]:
+            self.nvenc_preset_combo.addItem(lbl, data)
+        add_row("Encoder preset", self.nvenc_preset_combo,
+                "How hard the GPU works per frame. Higher presets give better\n"
+                "quality at the same size but use more GPU. P5 is a good balance.")
+
+        self.nvenc_multipass_combo = NoScrollComboBox()
+        for data, lbl in [("disabled", "Disabled"), ("qres", "Quarter resolution"),
+                          ("fullres", "Full resolution")]:
+            self.nvenc_multipass_combo.addItem(lbl, data)
+        add_row("Multipass", self.nvenc_multipass_combo,
+                "Analyses each frame twice to spend bitrate more wisely, reducing\n"
+                "blocky artifacts in motion. Quarter-res is nearly free; full-res\n"
+                "costs more GPU. Mainly helps CBR/VBR.")
+
+        self.nvenc_profile_combo = NoScrollComboBox()
+        for data, lbl in [("auto", "Auto"), ("main", "Main"), ("high", "High"),
+                          ("main10", "Main 10 (HDR/10-bit)")]:
+            self.nvenc_profile_combo.addItem(lbl, data)
+        add_row("Profile", self.nvenc_profile_combo,
+                "Encoder feature set. Auto is right for almost everyone.\n"
+                "Main 10 enables 10-bit/HDR (HEVC/AV1) if your capture is HDR.")
+
+        self.nvenc_bframes = NoScrollSpinBox()
+        self.nvenc_bframes.setRange(0, 4)
+        self.nvenc_bframes.setValue(config.nvenc_bframes)
+        add_row("B-frames", self.nvenc_bframes,
+                "Frames stored as the difference between neighbours — they shrink\n"
+                "files at no real quality cost. 2 is a safe default; set 0 only if\n"
+                "a player has trouble with the clips.")
+
+        layout.addWidget(enc_g)
+
+        # Load saved values (before wiring, so no spurious dirty/custom marking).
+        self._set_combo_by_data(self.nvenc_rc, config.nvenc_rate_control)
+        self._set_combo_by_data(self.nvenc_preset_combo, config.nvenc_preset)
+        self._set_combo_by_data(self.nvenc_multipass_combo, config.nvenc_multipass)
+        self._set_combo_by_data(self.nvenc_profile_combo, config.nvenc_profile)
+        self._set_combo_by_data(self.enc_preset_combo, config.encoding_preset)
+        self._update_nvenc_rc_visibility()
+
+        self.enc_preset_combo.currentIndexChanged.connect(self._on_enc_preset_selected)
+        self.nvenc_rc.currentIndexChanged.connect(self._on_nvenc_rc_changed)
+        for w in (self.codec, self.nvenc_preset_combo, self.nvenc_multipass_combo,
+                  self.nvenc_profile_combo):
+            w.currentIndexChanged.connect(self._enc_knob_changed)
+        for w in (self.bitrate, self.nvenc_maxbitrate, self.nvenc_cq, self.nvenc_bframes):
+            w.valueChanged.connect(self._enc_knob_changed)
+
+        self._enc_dirty_signals = [
+            self.codec.currentIndexChanged, self.nvenc_rc.currentIndexChanged,
+            self.bitrate.valueChanged, self.nvenc_maxbitrate.valueChanged,
+            self.nvenc_cq.valueChanged, self.nvenc_preset_combo.currentIndexChanged,
+            self.nvenc_multipass_combo.currentIndexChanged,
+            self.nvenc_profile_combo.currentIndexChanged, self.nvenc_bframes.valueChanged,
+            self.enc_preset_combo.currentIndexChanged,
+        ]
+
+    def _update_nvenc_rc_visibility(self):
+        rc = self.nvenc_rc.currentData()
+        cbr_vbr = rc in ("cbr", "vbr")
+        self._lbl_bitrate.setVisible(cbr_vbr); self.bitrate.setVisible(cbr_vbr)
+        self._lbl_maxbitrate.setVisible(rc == "vbr"); self.nvenc_maxbitrate.setVisible(rc == "vbr")
+        self._lbl_cq.setVisible(rc == "cqp"); self.nvenc_cq.setVisible(rc == "cqp")
+
+    def _on_nvenc_rc_changed(self, *_):
+        self._update_nvenc_rc_visibility()
+        self._enc_knob_changed()
+
+    def _enc_knob_changed(self, *_):
+        # A manual knob change means the named preset no longer matches -> Custom.
+        if getattr(self, "_applying_preset", False):
+            return
+        combo = self.enc_preset_combo
+        if combo.currentData() != "custom":
+            combo.blockSignals(True)
+            self._set_combo_by_data(combo, "custom")
+            combo.blockSignals(False)
+
+    def _on_enc_preset_selected(self, *_):
+        name = self.enc_preset_combo.currentData()
+        if name and name != "custom":
+            self._apply_enc_preset(name)
+
+    def _apply_enc_preset(self, name):
+        spec = self._ENC_PRESETS.get(name)
+        if not spec:
+            return
+        rc, cq, br, preset, multipass = spec
+        self._applying_preset = True
+        try:
+            self._set_combo_by_data(self.nvenc_rc, rc)
+            self.nvenc_cq.setValue(cq)
+            self.bitrate.setValue(br)
+            self._set_combo_by_data(self.nvenc_preset_combo, preset)
+            self._set_combo_by_data(self.nvenc_multipass_combo, multipass)
+            self._update_nvenc_rc_visibility()
+        finally:
+            self._applying_preset = False
+
+    def _encoding_changed(self, c) -> bool:
+        if self._is_win:
+            return (self.codec.currentText()                 != c.gpu_recorder_codec
+                    or self.nvenc_rc.currentData()           != c.nvenc_rate_control
+                    or self.bitrate.value()                  != c.gpu_recorder_bitrate_kbps
+                    or self.nvenc_maxbitrate.value()         != c.nvenc_max_bitrate_kbps
+                    or self.nvenc_cq.value()                 != c.nvenc_cq_level
+                    or self.nvenc_preset_combo.currentData() != c.nvenc_preset
+                    or self.nvenc_multipass_combo.currentData() != c.nvenc_multipass
+                    or self.nvenc_profile_combo.currentData() != c.nvenc_profile
+                    or self.nvenc_bframes.value()            != c.nvenc_bframes
+                    or self.enc_preset_combo.currentData()   != c.encoding_preset)
+        return (self.codec.currentText()           != c.gpu_recorder_codec
+                or self.color_range.currentText()  != c.gpu_recorder_color_range
+                or self.quality_mode.currentText() != c.gpu_recorder_quality_mode
+                or self.bitrate.value()            != c.gpu_recorder_bitrate_kbps
+                or self.quality_preset.currentText() != c.gpu_recorder_quality_preset
+                or self.tune.currentText()         != c.gpu_recorder_tune)
+
+    def _encoding_save(self, c):
+        c.gpu_recorder_codec = self.codec.currentText()
+        c.gpu_recorder_bitrate_kbps = self.bitrate.value()
+        if self._is_win:
+            c.nvenc_rate_control = self.nvenc_rc.currentData()
+            c.nvenc_max_bitrate_kbps = self.nvenc_maxbitrate.value()
+            c.nvenc_cq_level = self.nvenc_cq.value()
+            c.nvenc_preset = self.nvenc_preset_combo.currentData()
+            c.nvenc_multipass = self.nvenc_multipass_combo.currentData()
+            c.nvenc_profile = self.nvenc_profile_combo.currentData()
+            c.nvenc_bframes = self.nvenc_bframes.value()
+            c.encoding_preset = self.enc_preset_combo.currentData()
+        else:
+            c.gpu_recorder_color_range = self.color_range.currentText()
+            c.gpu_recorder_quality_mode = self.quality_mode.currentText()
+            c.gpu_recorder_quality_preset = self.quality_preset.currentText()
+            c.gpu_recorder_tune = self.tune.currentText()
+
     def _on_mode_changed(self, mode: str):
         cbr_vbr = mode in ("cbr", "vbr")
         self.bitrate.setEnabled(cbr_vbr)
         self.quality_preset.setEnabled(not cbr_vbr)
 
     def _is_autostart_enabled(self) -> bool:
+        import sys
+        if sys.platform == "win32":
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0, winreg.KEY_READ,
+                )
+                winreg.QueryValueEx(key, "AutoClip")
+                winreg.CloseKey(key)
+                return True
+            except OSError:
+                return False
         from pathlib import Path
         return (Path.home() / ".config/autostart/autoclip.desktop").exists()
 
     def _on_autostart_toggled(self, enabled: bool):
+        import sys
+        import logging
+        log = logging.getLogger(__name__)
+        if sys.platform == "win32":
+            try:
+                import winreg, sys as _sys
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0, winreg.KEY_SET_VALUE,
+                )
+                if enabled:
+                    exe = _sys.executable
+                    winreg.SetValueEx(key, "AutoClip", 0, winreg.REG_SZ,
+                                      f'"{exe}" -m autoclip.main')
+                    log.info("Autostart enabled via registry")
+                else:
+                    try:
+                        winreg.DeleteValue(key, "AutoClip")
+                    except OSError:
+                        pass
+                    log.info("Autostart disabled via registry")
+                winreg.CloseKey(key)
+            except OSError as e:
+                log.warning(f"Could not update autostart registry key: {e}")
+            return
+
         from pathlib import Path
         autostart_dir  = Path.home() / ".config/autostart"
         desktop_path   = autostart_dir / "autoclip.desktop"
@@ -726,13 +1057,11 @@ class RecordingTab(QWidget):
                 "X-GNOME-Autostart-enabled=true\n"
                 "X-KDE-autostart-after=panel\n"
             )
-            import logging
-            logging.getLogger(__name__).info(f"Autostart enabled: {desktop_path}")
+            log.info(f"Autostart enabled: {desktop_path}")
         else:
             if desktop_path.exists():
                 desktop_path.unlink()
-            import logging
-            logging.getLogger(__name__).info("Autostart disabled")
+            log.info("Autostart disabled")
 
     def _validate_timing(self):
         clip_len = self.pre.value()
@@ -770,12 +1099,7 @@ class RecordingTab(QWidget):
         self.config.exports_dir = self.exp_edit.text().strip()
         self.config.gpu_recorder_path = self.rec_path.text()
         self.config.gpu_recorder_fps = self.fps.value()
-        self.config.gpu_recorder_codec = self.codec.currentText()
-        self.config.gpu_recorder_color_range = self.color_range.currentText()
-        self.config.gpu_recorder_quality_mode = self.quality_mode.currentText()
-        self.config.gpu_recorder_bitrate_kbps = self.bitrate.value()
-        self.config.gpu_recorder_quality_preset = self.quality_preset.currentText()
-        self.config.gpu_recorder_tune = self.tune.currentText()
+        self._encoding_save(self.config)
         self.config.monitor = self.monitor_combo.currentText()
         if self.radio_separate.isChecked():
             self.config.audio_track_mode = "separate"
@@ -788,8 +1112,13 @@ class RecordingTab(QWidget):
         self.config.post_event_seconds = min(self.post.value(), self.pre.value() - 1)
         self.config.manual_hotkey = self.hotkey.text()
         self.config.record_without_game = self.record_without_game_chk.isChecked()
+        self.config.start_minimized = self.start_minimized_chk.isChecked()
         self.config.save()
         self._mark_clean()
+        # Apply the new settings to a live recording session (restarts the recorder,
+        # which only reads config when spawned) so audio/encoding changes take effect.
+        if self._controller:
+            self._controller.reapply_recorder_settings()
 
 
 class AudioTriggersTab(QWidget):
@@ -887,6 +1216,8 @@ class MainWindow(QMainWindow):
     _status_sig = pyqtSignal(str)
     _event_sig = pyqtSignal(str)
     _clip_sig = pyqtSignal(str)
+    _update_sig = pyqtSignal(object, bool)   # (result, manual)
+    _apply_sig = pyqtSignal(str, str)        # (apply status, release page url)
 
     def __init__(self, controller: AppController):
         super().__init__()
@@ -894,6 +1225,7 @@ class MainWindow(QMainWindow):
         self.config = controller.config
         self._current_game = None
         self._clip_count = 0
+        self._pending_update = None   # (tag, win_url, page) once a check finds one
         self.setWindowTitle("AutoClip")
         self.setMinimumSize(740, 580)
         if not self._restore_geometry():
@@ -1011,38 +1343,146 @@ class MainWindow(QMainWindow):
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(self)
-        # Generate a simple coloured icon programmatically — no icon file needed
-        from PyQt6.QtGui import QPixmap, QColor, QPainter
-        pixmap = QPixmap(32, 32)
-        pixmap.fill(QColor(0, 0, 0, 0))
-        painter = QPainter(pixmap)
-        painter.setBrush(QColor(_theme.current.accent))
-        painter.setPen(QColor(_theme.current.accent))
-        painter.drawEllipse(4, 4, 24, 24)
-        painter.end()
-        from PyQt6.QtGui import QIcon
-        self.tray.setIcon(QIcon(pixmap))
-        self.setWindowIcon(QIcon(pixmap))
+        icon = app_icon()
+        self.tray.setIcon(icon)
+        self.setWindowIcon(icon)
         m = QMenu()
         show = QAction("Show AutoClip", self)
-        show.triggered.connect(self.show)
+        show.triggered.connect(self.surface)
+        upd = QAction("Check for Updates…", self)
+        upd.triggered.connect(lambda: self._check_for_updates(manual=True))
         quit_a = QAction("Quit", self)
         quit_a.triggered.connect(self._quit)
         m.addAction(show)
+        m.addAction(upd)
         m.addSeparator()
         m.addAction(quit_a)
         self.tray.setContextMenu(m)
-        self.tray.activated.connect(lambda _: self.show())
+        self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+
+    def _on_tray_activated(self, reason):
+        # Left/middle click or double-click surfaces the window; right-click opens
+        # the context menu (handled by Qt) so don't surface on Context.
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick,
+                      QSystemTrayIcon.ActivationReason.MiddleClick):
+            self.surface()
+
+    def surface(self):
+        """Bring the window to the foreground from the tray / hidden / minimized."""
+        if self.isMinimized():
+            self.showNormal()      # restore without clobbering a maximized state
+        else:
+            self.show()            # unhide; keeps prior normal/maximized state
+        self.raise_()
+        self.activateWindow()
+
+    def _on_update_btn_clicked(self):
+        # One button, two roles: install a found update, else check for one.
+        if self._pending_update:
+            self._install_update()
+        else:
+            self._check_for_updates(manual=True)
+
+    def _check_for_updates(self, manual: bool = False):
+        """Check GitHub releases in the background; result handled on the GUI thread."""
+        import threading
+        from ..core import updater
+        tab = getattr(self, "rec_tab", None)
+        if tab is not None and hasattr(tab, "_update_btn"):
+            tab._update_btn.setEnabled(False)
+            tab._update_status_lbl.setText("Checking for updates…")
+            tab._update_status_lbl.setStyleSheet(
+                f"color:{_theme.current.text_dim}; font-size:12px;")
+
+        def _work():
+            self._update_sig.emit(updater.check_for_update(), manual)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_update_result(self, result, manual: bool):
+        """Update the Settings UI (and a non-modal tray alert) — never auto-installs."""
+        from .. import __version__ as _ver
+        tab = getattr(self, "rec_tab", None)
+        has_ui = tab is not None and hasattr(tab, "_update_btn")
+        if has_ui:
+            tab._update_btn.setEnabled(True)
+
+        if not result:
+            self._pending_update = None
+            if has_ui:
+                tab._update_btn.setText("Check for Updates")
+                tab._update_status_lbl.setText(f"Up to date (v{_ver})")
+                tab._update_status_lbl.setStyleSheet(
+                    f"color:{_theme.current.text_dim}; font-size:12px;")
+            if manual:
+                self.tray.showMessage("AutoClip", f"You're up to date (v{_ver}).",
+                                      QSystemTrayIcon.MessageIcon.Information, 2500)
+            return
+
+        tag, _win_url, _page = result
+        self._pending_update = result
+        if has_ui:
+            tab._update_status_lbl.setText(f"Update available: {tag}")
+            tab._update_status_lbl.setStyleSheet(
+                f"color:{_theme.current.accent}; font-size:12px; font-weight:bold;")
+            tab._update_btn.setText(f"Install {tag}")
+        # Non-modal alert so a background check still lets the user know.
+        self.tray.showMessage("AutoClip — update available",
+                              f"{tag} is ready. Open Settings → Updates to install.",
+                              QSystemTrayIcon.MessageIcon.Information, 4000)
+
+    def _install_update(self):
+        """One-click install of the pending update (download/apply runs off the GUI thread)."""
+        import threading, webbrowser
+        from ..core import updater
+        if not self._pending_update:
+            return
+        tab = self.rec_tab
+        tag, win_url, page = self._pending_update
+        if not updater.can_self_update():
+            # Dev/source-without-git or no installer asset — hand off to the browser.
+            webbrowser.open(page)
+            tab._update_status_lbl.setText("Opened the download page in your browser.")
+            return
+        tab._update_btn.setEnabled(False)
+        tab._update_status_lbl.setText(f"Downloading {tag}…")
+
+        def _work():
+            self._apply_sig.emit(updater.apply_update(win_url), page)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_apply_result(self, status: str, page: str):
+        import webbrowser
+        tab = self.rec_tab
+        if status == "installing":
+            self._quit()
+        elif status == "updated-restart":
+            tab._update_status_lbl.setText("Updated — restart AutoClip to apply.")
+            QMessageBox.information(self, "Update installed",
+                                   "AutoClip was updated. Restart it to apply the changes.")
+            self._quit()
+        else:
+            tab._update_status_lbl.setText("Update failed — opened the download page.")
+            tab._update_btn.setEnabled(True)
+            webbrowser.open(page)
 
     def _wire(self):
         self._status_sig.connect(self._on_status)
         self._event_sig.connect(self._on_event)
         self._clip_sig.connect(self._on_clip)
+        self._update_sig.connect(self._on_update_result)
+        self._apply_sig.connect(self._on_apply_result)
+        # Background-check shortly after launch to ALERT (non-modal) when an update
+        # exists — it never installs on its own; the user clicks Install in Settings.
+        from ..core import updater
+        if updater.can_self_update():
+            QTimer.singleShot(4000, lambda: self._check_for_updates(manual=False))
         self.controller.on_status_change = lambda s: self._status_sig.emit(s)
         self.controller.on_event = lambda e: self._event_sig.emit(e)
         self.controller.on_clip_saved = lambda r: self._clip_sig.emit(r)
         self.rec_tab._controller = self.controller
+        self.rec_tab._main_window = self   # so the Settings "Updates" button reaches update logic
         self.audio_triggers_tab._controller = self.controller
         # Pass plugin trigger styles to event log
         styles = getattr(self.controller, 'trigger_log_style', {})
@@ -1052,6 +1492,7 @@ class MainWindow(QMainWindow):
         # Initialise clip counter from disk so it shows total, not just this session
         self._refresh_clip_count()
         self._tab_change_guard = False
+        self._clips_loaded = False
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _on_tab_changed(self, new_index: int):
@@ -1083,6 +1524,10 @@ class MainWindow(QMainWindow):
             if msg.clickedButton() is save_btn:
                 self.rec_tab._save()
         self._prev_tab_index = new_index
+        clips_index = self.tabs.indexOf(self.clips_tab)
+        if new_index == clips_index and not self._clips_loaded:
+            self._clips_loaded = True
+            self.clips_tab.refresh()
 
     def _on_status(self, s: str):
         recording = s.lower() in ("running", "recording")
@@ -1187,6 +1632,8 @@ class MainWindow(QMainWindow):
             if cs2_tab and hasattr(cs2_tab, "gsi_status"):
                 cs2_tab.gsi_status.setText(f"✓ Installed to {path}")
                 cs2_tab.gsi_status.setStyleSheet(f"color: {_theme.current.success}; font-size: 12px;")
+            if cs2_tab and hasattr(cs2_tab, "install_btn"):
+                cs2_tab.install_btn.setVisible(False)   # installed now — hide the button
             QMessageBox.information(self, "GSI Installed",
                 "Config installed.\nRestart CS2 for it to take effect.")
         else:
@@ -1200,8 +1647,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         event.ignore()
         self.hide()
-        self.tray.showMessage("AutoClip", "Running in system tray",
-                              QSystemTrayIcon.MessageIcon.Information, 1500)
+        self.tray.showMessage(
+            "AutoClip", "Still running in the system tray — recording continues. "
+            "Right-click the tray icon to quit.",
+            QSystemTrayIcon.MessageIcon.Information, 2500)
 
     def _quit(self):
         self._save_geometry()
@@ -1211,9 +1660,10 @@ class MainWindow(QMainWindow):
     def _save_geometry(self):
         from pathlib import Path as _P
         import json
+        from autoclip.core.config import CONFIG_DIR
         geo = self.geometry()
         try:
-            p = _P.home() / ".config" / "autoclip" / "window.json"
+            p = CONFIG_DIR / "window.json"
             p.write_text(json.dumps(
                 {"x": geo.x(), "y": geo.y(), "w": geo.width(), "h": geo.height()}))
         except Exception:
@@ -1222,8 +1672,9 @@ class MainWindow(QMainWindow):
     def _restore_geometry(self) -> bool:
         from pathlib import Path as _P
         import json
+        from autoclip.core.config import CONFIG_DIR
         try:
-            p = _P.home() / ".config" / "autoclip" / "window.json"
+            p = CONFIG_DIR / "window.json"
             if p.exists():
                 d = json.loads(p.read_text())
                 screen = QApplication.primaryScreen().geometry()
@@ -1241,19 +1692,88 @@ class MainWindow(QMainWindow):
 def run_app():
     logging.basicConfig(level=logging.DEBUG,
                         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    config = Config.load()
-    controller = AppController(config)
+    import sys as _sys, atexit, traceback, faulthandler
+    # A windowed (no-console) frozen build has sys.stderr == None; faulthandler
+    # needs a real file, so point it at the log file (or skip if neither exists).
+    if _sys.stderr is not None:
+        faulthandler.enable()
+    else:
+        for h in logging.getLogger().handlers:
+            stream = getattr(h, "stream", None)
+            if stream is not None and hasattr(stream, "fileno"):
+                try:
+                    faulthandler.enable(stream)
+                    break
+                except (ValueError, OSError):
+                    pass
+    def _on_exit():
+        import logging as _l
+        _l.getLogger(__name__).warning("run_app: process exiting (atexit)\n%s",
+                                       "".join(traceback.format_stack()))
+    atexit.register(_on_exit)
+    # Force native desktop OpenGL on Windows — Qt defaults to ANGLE (DirectX)
+    # which is incompatible with mpv's OpenGL render context.
+    if _sys.platform == "win32":
+        import os as _os
+        _os.environ.setdefault("QT_OPENGL", "desktop")
     app = QApplication(sys.argv)
     app.setApplicationName("AutoClip")
+
+    # Single-instance guard (cross-platform via Qt local sockets). A second launch
+    # connects to the running instance, asks it to surface, then exits — before any
+    # heavy init or binding the GSI port. If the connect fails we are the primary.
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    import getpass
+    _sock_name = f"autoclip-singleton-{getpass.getuser()}"
+    _probe = QLocalSocket()
+    _probe.connectToServer(_sock_name)
+    if _probe.waitForConnected(250):
+        _probe.write(b"surface")
+        _probe.flush()
+        _probe.waitForBytesWritten(500)
+        _probe.disconnectFromServer()
+        logging.getLogger(__name__).info(
+            "Another AutoClip instance is already running — surfaced it and exiting.")
+        return
+    QLocalServer.removeServer(_sock_name)   # clear any stale socket from a crash
+    _singleton_server = QLocalServer()
+    _singleton_server.listen(_sock_name)
+
+    config = Config.load()
+    controller = AppController(config)
     _theme.load(config.theme)
     app.setStyleSheet(_theme.build_stylesheet(_theme.current))
     app.setQuitOnLastWindowClosed(False)
     window = MainWindow(controller)
-    window.show()
+
+    # When a second launch pings the singleton server, surface this window.
+    def _on_second_instance():
+        conn = _singleton_server.nextPendingConnection()
+        if conn is not None:
+            conn.readAll()
+            conn.disconnectFromServer()
+        window.surface()
+    _singleton_server.newConnection.connect(_on_second_instance)
+
+    if config.start_minimized:
+        # Stay hidden in the tray; let the user know it launched so it's not "missing".
+        window.tray.showMessage(
+            "AutoClip", "Started in the system tray — click the icon to open.",
+            QSystemTrayIcon.MessageIcon.Information, 2500)
+    else:
+        window.show()
     try:
         controller.start()
     except RuntimeError as e:
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.critical(None, "AutoClip — Startup Error", str(e))
         sys.exit(1)
+
+    # On Windows, game detection runs on the main thread via QTimer instead of a
+    # background thread — background threads AV after Qt/mpv corrupt Python's heap.
+    if _sys.platform == "win32":
+        _game_timer = QTimer()
+        _game_timer.timeout.connect(controller.tick_game_detection)
+        _game_timer.start(5000)
+
     sys.exit(app.exec())

@@ -133,14 +133,18 @@ class ClipTrigger:
     def _probe_duration(self, path) -> float:
         """Get real clip duration via ffprobe."""
         try:
-            r = subprocess.run(
+            # Use clips._run_capture: it suppresses the console window on Windows
+            # (CREATE_NO_WINDOW) and avoids the Py3.11.9 subprocess crash. A raw
+            # subprocess.run here flashed a terminal window on every clip save.
+            from autoclip.core.clips import _run_capture
+            stdout, _stderr, _rc = _run_capture(
                 ["ffprobe", "-v", "error",
                  "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1",
                  str(path)],
-                capture_output=True, text=True, timeout=10
+                timeout=10
             )
-            val = r.stdout.strip()
+            val = stdout.strip()
             if val and val != "N/A":
                 return float(val)
         except Exception as e:

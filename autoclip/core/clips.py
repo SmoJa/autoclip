@@ -4,6 +4,7 @@ Clip library scanner and post-processing utilities.
 Folder structure: output_dir / Game / YYYY-MM-DD / clip.mp4
 """
 import subprocess
+import sys
 import threading
 import logging
 import functools
@@ -13,7 +14,111 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 from datetime import datetime
 
+# Pre-import these modules at load time (main thread, before Qt)
+# so _compile_bytecode is never called from a background thread after
+# Qt/mpv potentially corrupt the process heap (Python 3.11.9 Windows bug).
+if sys.platform == "win32":
+    import concurrent.futures
+    import concurrent.futures.process
+    import multiprocessing
+    import multiprocessing.connection
+    import multiprocessing.context
+
+# On Windows, suppress console windows for all child processes and
+# provide an explicit null stdin so detached processes don't inherit
+# an invalid handle that causes pipe access violations.
+_SUBPROCESS_FLAGS: dict = {}
+if sys.platform == "win32":
+    _SUBPROCESS_FLAGS = {
+        "stdin": subprocess.DEVNULL,
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+    }
+
+
+def _run_capture(cmd, timeout=30):
+    """subprocess.run with stdout/stderr capture.
+    On Windows, avoids Python 3.11.9 subprocess AV bug by writing output to
+    named temporary files and waiting via ctypes WaitForSingleObject instead
+    of Python's Popen.wait() which triggers the crash.
+    On other platforms falls back to subprocess.run."""
+    import tempfile, os
+    if sys.platform != "win32":
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+        return r.stdout, r.stderr, r.returncode
+
+    # Use named temp files so we can pass them to Popen as file handles without
+    # using anonymous pipes (which trigger the _readerthread AV) or anonymous
+    # temp files (whose handles can cause WaitForSingleObject AV in 3.11.9).
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    WAIT_TIMEOUT  = 0x102
+    INFINITE      = 0xFFFFFFFF
+    STILL_ACTIVE  = 259
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".out") as out_tmp, \
+         tempfile.NamedTemporaryFile(delete=False, suffix=".err") as err_tmp:
+        out_path = out_tmp.name
+        err_path = err_tmp.name
+
+    try:
+        with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
+            proc = subprocess.Popen(
+                cmd, stdout=out_f, stderr=err_f,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                close_fds=True,
+            )
+
+        # Wait via ctypes, bypassing Python's Popen._wait which AVs in 3.11.9.
+        # HANDLE is void* (8 bytes on x64) — must use c_void_p, not a bare int.
+        h = ctypes.c_void_p(int(proc._handle))
+        millis = INFINITE if timeout is None else max(0, int(timeout * 1000))
+        result = kernel32.WaitForSingleObject(h, ctypes.c_uint32(millis))
+        if result == WAIT_TIMEOUT:
+            kernel32.TerminateProcess(h, ctypes.c_uint32(1))
+            kernel32.WaitForSingleObject(h, ctypes.c_uint32(INFINITE))
+
+        exit_code = ctypes.c_uint32(STILL_ACTIVE)
+        kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code))
+        returncode = exit_code.value
+
+        with open(out_path, "rb") as f:
+            stdout = f.read().decode("utf-8", errors="replace")
+        with open(err_path, "rb") as f:
+            stderr = f.read().decode("utf-8", errors="replace")
+    finally:
+        for p in (out_path, err_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    return stdout, stderr, returncode
+
 logger = logging.getLogger(__name__)
+
+
+def _find_tool(name: str) -> str:
+    """Return the path to ffmpeg/ffprobe, searching PATH then common Windows install locations."""
+    import shutil
+    found = shutil.which(name)
+    if found:
+        return found
+    # winget installs ffmpeg here by default
+    import glob, sys
+    if sys.platform == "win32":
+        import os
+        winget_base = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
+        pattern = str(winget_base / f"Gyan.FFmpeg*" / "**" / f"{name}.exe")
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            return matches[0]
+    return name  # fall back to bare name and let subprocess fail with a clear error
+
+
+_FFPROBE = _find_tool("ffprobe")
+_FFMPEG  = _find_tool("ffmpeg")
 
 
 @functools.lru_cache(maxsize=512)
@@ -21,18 +126,19 @@ def probe_hdr_peak(clip_path_str: str) -> float:
     """Return peak luminance ratio (MaxCLL nits / 100) for tonemap peak parameter.
     Falls back to 10.0 (1000 nit HDR10) if no metadata found."""
     try:
-        r = subprocess.run([
-            "ffprobe", "-v", "quiet",
-            "-select_streams", "v:0",
-            "-read_intervals", "%+#1",
-            "-show_frames",
-            "-show_entries",
-            "stream=color_transfer:"
-            "frame_side_data=max_content,max_average,max_luminance,min_luminance",
-            "-of", "json",
-            clip_path_str,
-        ], capture_output=True, text=True, timeout=10)
-        data = json.loads(r.stdout)
+        with _safe_probe_path(Path(clip_path_str)) as probe_path:
+            stdout, _, _ = _run_capture([
+                _FFPROBE, "-v", "quiet",
+                "-select_streams", "v:0",
+                "-read_intervals", "%+#1",
+                "-show_frames",
+                "-show_entries",
+                "stream=color_transfer:"
+                "frame_side_data=max_content,max_average,max_luminance,min_luminance",
+                "-of", "json",
+                probe_path,
+            ], timeout=10)
+        data = json.loads(stdout)
         for frame in data.get("frames", []):
             for sd in frame.get("side_data_list", []):
                 max_cll = sd.get("max_content", 0)
@@ -253,18 +359,45 @@ def _suggest_trigger_label(events: list) -> str:
     return "clip"
 
 
+def _safe_probe_path(path: Path):
+    """Return a context manager yielding a path safe for subprocess args.
+    On Windows, filenames may contain Unicode Private Use Area characters
+    (e.g. U+F022) that cause ffprobe.exe to crash. We create a temporary
+    hardlink with an ASCII-only name to avoid this."""
+    import contextlib, tempfile, os
+    if sys.platform != "win32":
+        @contextlib.contextmanager
+        def _noop():
+            yield str(path)
+        return _noop()
+
+    @contextlib.contextmanager
+    def _hardlink():
+        tmp = tempfile.mktemp(suffix=path.suffix, dir=path.parent)
+        try:
+            os.link(str(path), tmp)
+            yield tmp
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return _hardlink()
+
+
 def probe_clip(path: Path) -> tuple[float, bool]:
     """Return (duration_seconds, is_hdr) using ffprobe."""
     try:
-        # Query both stream and format — HDR MKVs often have N/A stream duration
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=duration,color_transfer:format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=10
-        )
+        with _safe_probe_path(path) as probe_path:
+            # Query both stream and format — HDR MKVs often have N/A stream duration
+            stdout, _, _ = _run_capture(
+                [_FFPROBE, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=duration,color_transfer:format=duration",
+                 "-of", "csv=p=0", probe_path],
+                timeout=10,
+            )
         import re
-        parts    = re.split(r"[,\n]", result.stdout.strip())
+        parts    = re.split(r"[,\n]", stdout.strip())
         duration = 0.0
         is_hdr   = False
         for part in parts:
@@ -294,36 +427,107 @@ def scan_library(output_dir: str) -> List[Clip]:
         return clips
 
     # Structure: root / Game / YYYY-MM-DD / file.mp4
+    # Also handles flat: root / Game / file.mp4 (clips not organised into date folders)
+    import re
+    _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
     for game_dir in sorted(root.iterdir()):
         if not game_dir.is_dir():
             continue
         game = game_dir.name
-        for date_dir in sorted(game_dir.iterdir(), reverse=True):
-            if not date_dir.is_dir():
-                continue
-            date = date_dir.name
-            for clip_path in sorted(date_dir.iterdir(), reverse=True):
-                if clip_path.suffix.lower() not in (".mp4", ".mkv", ".mov"):
-                    continue
-                clip = Clip(
-                    path=clip_path,
+        for entry in sorted(game_dir.iterdir(), reverse=True):
+            if entry.is_dir():
+                date = entry.name
+                for clip_path in sorted(entry.iterdir(), reverse=True):
+                    if clip_path.suffix.lower() not in (".mp4", ".mkv", ".mov"):
+                        continue
+                    clips.append(Clip(
+                        path=clip_path,
+                        game=game,
+                        date=date,
+                        filename=clip_path.name,
+                        size_bytes=clip_path.stat().st_size,
+                    ))
+            elif entry.suffix.lower() in (".mp4", ".mkv", ".mov"):
+                # Flat file — extract date from filename, fall back to mtime
+                m = _DATE_RE.search(entry.stem)
+                if m:
+                    date = m.group(0)
+                else:
+                    import datetime
+                    date = datetime.date.fromtimestamp(entry.stat().st_mtime).isoformat()
+                clips.append(Clip(
+                    path=entry,
                     game=game,
                     date=date,
-                    filename=clip_path.name,
-                    size_bytes=clip_path.stat().st_size,
-                )
-                clips.append(clip)
+                    filename=entry.name,
+                    size_bytes=entry.stat().st_size,
+                ))
 
     return clips
 
 
+def _probe_clip_worker(path_str: str) -> tuple:
+    """Top-level function for ProcessPoolExecutor — runs in a separate process."""
+    return probe_clip(Path(path_str))
+
+
+# Cache of probe results so a directory-watcher refresh doesn't re-run ffprobe on
+# every clip each time (scan_library hands back fresh Clip objects with duration 0).
+# Keyed by path; invalidated when the file's mtime changes. Clips never change once
+# written, so this is effectively permanent per file.
+_PROBE_CACHE: dict = {}
+
+
+def _probe_cached(clip: "Clip") -> bool:
+    """Fill clip metadata from cache if present and current. Returns True on hit."""
+    try:
+        mtime = clip.path.stat().st_mtime
+    except OSError:
+        return False
+    hit = _PROBE_CACHE.get(str(clip.path))
+    if hit and hit[2] == mtime:
+        clip.duration_secs, clip.is_hdr = hit[0], hit[1]
+        return True
+    return False
+
+
+def _probe_store(clip: "Clip") -> None:
+    try:
+        _PROBE_CACHE[str(clip.path)] = (clip.duration_secs, clip.is_hdr,
+                                        clip.path.stat().st_mtime)
+    except OSError:
+        pass
+
+
 def probe_clips_async(clips: List[Clip], on_done: Callable):
-    """Probe clip metadata in a background thread."""
+    """Probe clip metadata. On Windows uses a ProcessPoolExecutor worker to isolate
+    subprocess calls from the parent's handle table (Python 3.11.9 AV bug)."""
+    if sys.platform == "win32":
+        # On Windows, background threads AV after Qt/mpv load due to heap corruption
+        # (Python 3.11.9 + Qt6/libmpv DLLs). Run synchronously in the calling thread
+        # (Qt main thread) which is safe — but ONLY ffprobe clips we haven't already
+        # probed, or a directory-watcher refresh would re-probe everything and freeze
+        # the UI for hundreds of ms each cycle.
+        for clip in clips:
+            if _probe_cached(clip):
+                continue
+            try:
+                clip.duration_secs, clip.is_hdr = probe_clip(clip.path)
+                _probe_store(clip)
+            except Exception:
+                pass
+        on_done()
+        return
+
     def _probe():
         for clip in clips:
+            if _probe_cached(clip):
+                continue
             duration, is_hdr = probe_clip(clip.path)
             clip.duration_secs = duration
             clip.is_hdr = is_hdr
+            _probe_store(clip)
         on_done()
     threading.Thread(target=_probe, daemon=True).start()
 
@@ -384,7 +588,7 @@ def convert_to_sdr(clip: Clip, on_progress: Callable[[str], None],
         )
 
         cmd_nvenc = [
-            "ffmpeg", "-y",
+            _FFMPEG, "-y",
             "-i", str(clip.path),
             "-vf", vf,
             "-c:v", "h264_nvenc",
@@ -393,7 +597,7 @@ def convert_to_sdr(clip: Clip, on_progress: Callable[[str], None],
             str(actual_out)
         ]
         cmd_cpu = [
-            "ffmpeg", "-y",
+            _FFMPEG, "-y",
             "-i", str(clip.path),
             "-vf", vf,
             "-c:v", "libx264",
@@ -419,7 +623,12 @@ def convert_to_sdr(clip: Clip, on_progress: Callable[[str], None],
             on_progress(f"Encoding with {label}...")
             logger.info(f"SDR convert cmd: {' '.join(full_cmd)}")
             try:
-                result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=600)
+                _, stderr, returncode = _run_capture(full_cmd, timeout=600)
+                class _R:
+                    pass
+                result = _R()
+                result.returncode = returncode
+                result.stderr = stderr
                 if result.returncode == 0 and actual_out.exists():
                     # If we used a temp file, replace the original
                     if actual_out != out_path:
@@ -460,7 +669,7 @@ def trim_clip(clip: Clip, start_secs: float, end_secs: float,
     def _trim():
         duration = end_secs - start_secs
         cmd = [
-            "ffmpeg", "-y",
+            _FFMPEG, "-y",
             "-ss", str(start_secs),
             "-i", str(clip.path),
             "-t", str(duration),
@@ -468,8 +677,8 @@ def trim_clip(clip: Clip, start_secs: float, end_secs: float,
             str(out_path)
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            success = result.returncode == 0 and out_path.exists()
+            _, _, rc = _run_capture(cmd, timeout=120)
+            success = rc == 0 and out_path.exists()
             on_done(success, out_path)
         except Exception as e:
             logger.error(f"Trim failed: {e}")
@@ -509,7 +718,8 @@ def export_clip(clip: Clip, out_path: Path,
         time_re  = _re.compile(rb'time=(\d+):(\d+):([\d.]+)')
         speed_re = _re.compile(rb'speed=\s*([\d.]+)x')
 
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                **_SUBPROCESS_FLAGS)
         fd = proc.stderr.fileno()
         buf = b""
         stderr_all = b""
@@ -667,7 +877,7 @@ def extract_waveform(path, num_samples: int = 800):
     try:
         # Decode audio to raw PCM float32 at low sample rate for waveform display
         cmd = [
-            "ffmpeg", "-v", "error",
+            _FFMPEG, "-v", "error",
             "-i", str(path),
             "-vn",                          # no video
             "-ac", "1",                     # mono
@@ -675,13 +885,20 @@ def extract_waveform(path, num_samples: int = 800):
             "-f", "f32le",                  # raw float32 little-endian
             "-",
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
-        if not result.stdout or len(result.stdout) < 4:
-            import logging
-            logging.getLogger(__name__).debug(
-                f"Waveform: no audio data. stderr: {result.stderr[-200:]}")
+        import tempfile
+        with tempfile.TemporaryFile() as out_f:
+            proc = subprocess.Popen(cmd, stdout=out_f, stderr=subprocess.DEVNULL,
+                                    **_SUBPROCESS_FLAGS)
+            try:
+                proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            out_f.seek(0)
+            raw = out_f.read()
+        if not raw or len(raw) < 4:
             return np.zeros(num_samples)
-        data = np.frombuffer(result.stdout, dtype=np.float32)
+        data = np.frombuffer(raw, dtype=np.float32)
         if len(data) < num_samples:
             return np.zeros(num_samples)
         # Downsample to num_samples by taking RMS of chunks

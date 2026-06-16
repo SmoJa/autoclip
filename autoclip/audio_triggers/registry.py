@@ -17,7 +17,19 @@ _ALL_PLUGINS: List[Type[AudioTriggerPlugin]] = []
 _NAME_MAP: dict = {}
 
 
+def _register_from_module(mod):
+    """Register every AudioTriggerPlugin subclass defined in an imported module."""
+    for attr_name in dir(mod):
+        obj = getattr(mod, attr_name)
+        if (isinstance(obj, type) and
+                issubclass(obj, AudioTriggerPlugin) and
+                obj is not AudioTriggerPlugin and
+                obj.NAME):
+            _register(obj)
+
+
 def _load_plugins():
+    """Load built-in audio-trigger plugins, then user drop-in plugins."""
     if _ALL_PLUGINS:
         return
 
@@ -32,14 +44,12 @@ def _load_plugins():
         except Exception as e:
             logger.warning(f"Failed to load audio trigger plugin {module_name}: {e}")
             continue
+        _register_from_module(mod)
 
-        for attr_name in dir(mod):
-            obj = getattr(mod, attr_name)
-            if (isinstance(obj, type) and
-                    issubclass(obj, AudioTriggerPlugin) and
-                    obj is not AudioTriggerPlugin and
-                    obj.NAME):
-                _register(obj)
+    # User drop-in plugins from <CONFIG_DIR>/plugins/audio/ (works in frozen builds).
+    from autoclip.core.user_plugins import iter_user_plugin_modules
+    for mod in iter_user_plugin_modules("audio"):
+        _register_from_module(mod)
 
 
 def _register(cls: Type[AudioTriggerPlugin]):

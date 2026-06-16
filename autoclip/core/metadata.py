@@ -212,11 +212,14 @@ class ClipMeta:
         if self.spectated_player:
             parts.append(f"spec[{safe(self.spectated_player)}]")
         if self.events:
+            # U+F022 stands in for ':' — colons are illegal in NTFS filenames,
+            # and _parse_events already maps it back when decoding
+            sep = ""
             items = []
             for e in self.events:
-                s = f"{e.trigger}:{round(e.secs_from_end, 1)}"
+                s = f"{e.trigger}{sep}{round(e.secs_from_end, 1)}"
                 if e.weapon:
-                    s += f":{e.weapon}"
+                    s += f"{sep}{e.weapon}"
                 items.append(s)
             parts.append(f"ev[{','.join(items)}]")
         parts.append(ts)
@@ -330,7 +333,9 @@ class ClipMeta:
 
     @staticmethod
     def _parse_events(ev_str: str) -> List[EventMark]:
-        """Parse 'hs:10,mk:7' into EventMark list."""
+        """Parse 'hs:10,mk:7' into EventMark list.
+        Linux clips use U+F022 as the colon separator inside events."""
+        ev_str = ev_str.replace("", ":")
         events = []
         for part in ev_str.split(","):
             part = part.strip()
