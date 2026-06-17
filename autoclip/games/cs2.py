@@ -661,21 +661,19 @@ class CS2Tab:
         w.gsi_status = QLabel("")
         w.gsi_status.setStyleSheet("color: #888; font-size: 12px;")
         gl.addWidget(w.gsi_status)
-        import os as _os
-        _gsi_file = None
-        for _p in [
-            _os.path.expanduser(
-                "~/.steam/steam/steamapps/common/"
-                "Counter-Strike Global Offensive/game/core/cfg/"
-                "gamestate_integration_autoclip.cfg"),
-            _os.path.expanduser(
-                "~/.local/share/Steam/steamapps/common/"
-                "Counter-Strike Global Offensive/game/core/cfg/"
-                "gamestate_integration_autoclip.cfg"),
-        ]:
-            if _os.path.isfile(_p):
-                _gsi_file = _p
-                break
+        import os as _os, sys as _sys
+        _cfg_rel = ("Counter-Strike Global Offensive/game/core/cfg/"
+                    "gamestate_integration_autoclip.cfg")
+        _cands = [
+            _os.path.expanduser(f"~/.steam/steam/steamapps/common/{_cfg_rel}"),
+            _os.path.expanduser(f"~/.local/share/Steam/steamapps/common/{_cfg_rel}"),
+        ]
+        if _sys.platform == "win32":
+            for _pf in (_os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                        _os.environ.get("ProgramFiles", r"C:\Program Files")):
+                _cands.append(_os.path.join(_pf, "Steam", "steamapps", "common",
+                                            *_cfg_rel.split("/")))
+        _gsi_file = next((_p for _p in _cands if _os.path.isfile(_p)), None)
         if _gsi_file:
             w.gsi_status.setText(f"✓ Installed to {_gsi_file}")
             w.gsi_status.setStyleSheet("color: #00cc66; font-size: 12px;")

@@ -271,16 +271,21 @@ class RecorderManager:
         a_tracks = []
         for track in audio_tracks:
             t = track if isinstance(track, dict) else vars(track)
-            if not t.get("enabled", True) or not t.get("device", ""):
+            if not t.get("enabled", True):
                 continue
             role = t.get("track_type", "game")
-            dev = t["device"]
+            dev = t.get("device") or ""
             if role == "mic":
-                kind, ident = "in", dev
+                # An enabled mic with no specific device records the default mic
+                # (obs_recorder treats id "default" as the system default input).
+                kind, ident = "in", (dev or "default")
             elif dev.startswith("app:"):
                 kind, ident = "app", dev[4:]
-            else:
+            elif dev:
                 kind, ident = "out", dev
+            else:
+                # Non-mic track with no resolved device/app — nothing to capture.
+                continue
             a_tracks.append({
                 "role": role, "kind": kind, "id": ident,
                 "vol": float(t.get("volume", 1.0)),
