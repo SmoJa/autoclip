@@ -10,7 +10,7 @@
 # The obs-runtime recorder bundle is shipped separately by the installer; libmpv-2.dll is
 # bundled below.
 import os
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_all
 
 ICON = os.path.join('autoclip', 'gui', 'autoclip.ico')
 
@@ -18,19 +18,23 @@ ICON = os.path.join('autoclip', 'gui', 'autoclip.ico')
 # third-party data (onnxruntime) needs bundling here.
 datas = collect_data_files('onnxruntime')
 
+# vosk (Phrases speech trigger): bundle the package + its native libs (libvosk).
+# collect_all pulls datas, binaries, and submodules.
+_vosk_datas, _vosk_binaries, _vosk_hiddenimports = collect_all('vosk')
+datas += _vosk_datas
+
 # libmpv for in-app playback (bundled so users don't need mpv.net installed)
-binaries = []
+binaries = list(_vosk_binaries)
 _mpv = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'mpv.net', 'libmpv-2.dll')
 if os.path.exists(_mpv):
     binaries.append((_mpv, '.'))
 
 # Every third-party package the loose autoclip code imports (anywhere). Enumerated
-# explicitly because `autoclip` is excluded from analysis below. (vosk is optional /
-# lazy-imported by the Phrases trigger and not installed, so it's omitted.)
+# explicitly because `autoclip` is excluded from analysis below.
 hiddenimports = [
-    'sounddevice', 'mpv', 'onnxruntime', 'numpy', 'send2trash', 'pynput',
+    'sounddevice', 'mpv', 'onnxruntime', 'numpy', 'send2trash', 'pynput', 'vosk',
     'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.QtNetwork',
-]
+] + _vosk_hiddenimports
 
 a = Analysis(
     ['autoclip_app.py'],

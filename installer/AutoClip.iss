@@ -4,7 +4,7 @@
 ; Inputs: ..\dist\AutoClip\  (PyInstaller runtime)   ..\obs-runtime\  (recorder bundle)
 ;         ..\autoclip\       (loose app source — Option A, updated by file replacement)
 
-#define AppVer "0.2.0"
+#define AppVer "0.2.1"
 
 [Setup]
 AppId={{C4D7E8F1-3A2B-4C5D-8E9F-1A2B3C4D5E6F}

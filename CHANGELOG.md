@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.1] - 2026-06-17
+
+### Fixed
+
+- **Phrases speech trigger on Windows** — vosk is now bundled into the Windows runtime, so the Phrases trigger works in the packaged app. The old "Install vosk" button could never work in a frozen build (you can't pip-install into a frozen runtime); it now hides automatically since vosk is present, leaving just "Download model". (Runtime change — Windows users get a full installer update.)
+
+---
+
 ## [0.2.0] - 2026-06-16
 
 ### Added
