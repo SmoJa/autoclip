@@ -718,7 +718,8 @@ def export_clip(clip: Clip, out_path: Path,
         time_re  = _re.compile(rb'time=(\d+):(\d+):([\d.]+)')
         speed_re = _re.compile(rb'speed=\s*([\d.]+)x')
 
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                **_SUBPROCESS_FLAGS)
         fd = proc.stderr.fileno()
         buf = b""
         stderr_all = b""
