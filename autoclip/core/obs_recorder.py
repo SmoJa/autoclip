@@ -147,6 +147,47 @@ class Obs:
         self.output_last_err = s("obs_output_get_last_error", CP, P)
         self.output_proc    = s("obs_output_get_proc_handler", P, P)
         self.proc_call      = s("proc_handler_call", C.c_bool, P, CP, C.POINTER(calldata))
+        # Source-type property enumeration — used to map a saved device friendly
+        # name to its WASAPI device_id (what the audio sources actually need).
+        self.get_source_properties = s("obs_get_source_properties", P, CP)
+        self.props_get      = s("obs_properties_get", P, P, CP)
+        self.props_destroy  = s("obs_properties_destroy", None, P)
+        self.prop_list_count = s("obs_property_list_item_count", C.c_size_t, P)
+        self.prop_list_name = s("obs_property_list_item_name", CP, P, C.c_size_t)
+        self.prop_list_string = s("obs_property_list_item_string", CP, P, C.c_size_t)
+
+    def device_id_for(self, source_id, wanted):
+        """Map a saved device value (friendly NAME or an actual device_id) to the
+        WASAPI device_id for `source_id` (a wasapi_* source type). Returns the id
+        string, or None to fall back to OBS's default device."""
+        if not wanted or wanted.lower() == "default":
+            return None
+        props = self.get_source_properties(source_id)
+        if not props:
+            return wanted  # can't enumerate — pass the value through unchanged
+        try:
+            prop = self.props_get(props, b"device_id")
+            if not prop:
+                return wanted
+            items = []
+            for i in range(self.prop_list_count(prop)):
+                nm = self.prop_list_name(prop, i)
+                vl = self.prop_list_string(prop, i)
+                items.append(((nm.decode(errors="replace") if nm else ""),
+                              (vl.decode(errors="replace") if vl else "")))
+            # exact match on the stored value as either an id or a friendly name
+            for nm, vl in items:
+                if wanted == vl or wanted == nm:
+                    return vl
+            # tolerant match (case / substring) for slightly different name strings
+            wl = wanted.lower()
+            for nm, vl in items:
+                nl = nm.lower()
+                if nl == wl or wl in nl or nl in wl:
+                    return vl
+            return None  # no device matched — use the default
+        finally:
+            self.props_destroy(props)
 
     def enum_encoder_ids(self):
         ids, i, sp = [], 0, CP()
@@ -386,9 +427,11 @@ def main():
             else:
                 log(f"audio app not running, skipping: {ident}")
         else:
-            if ident and ident.lower() != "default":
-                obs.data_set_string(ad, b"device_id", ident.encode())
             sid = b"wasapi_input_capture" if kind == "in" else b"wasapi_output_capture"
+            dev_id = obs.device_id_for(sid, ident)   # resolve friendly name -> device_id
+            if dev_id:
+                obs.data_set_string(ad, b"device_id", dev_id.encode())
+            log(f"audio {kind}: wanted={ident!r} -> device_id={dev_id!r}")
             a_src = obs.source_create(sid, f"clip_a{_achan}".encode(), ad, None)
         obs.data_release(ad)
         if not a_src:
