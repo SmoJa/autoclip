@@ -682,6 +682,7 @@ class CS2Tab:
             w.gsi_status.setStyleSheet("color: #cc3300; font-size: 12px;")
         w.install_btn = QPushButton("INSTALL GSI CONFIG")
         w.install_btn.setObjectName("primary")
+        w.install_btn.setVisible(_gsi_file is None)   # hide once it's installed
         gl.addWidget(w.install_btn)
 
         audio_row = QHBoxLayout()

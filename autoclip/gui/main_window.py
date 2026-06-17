@@ -1632,6 +1632,8 @@ class MainWindow(QMainWindow):
             if cs2_tab and hasattr(cs2_tab, "gsi_status"):
                 cs2_tab.gsi_status.setText(f"✓ Installed to {path}")
                 cs2_tab.gsi_status.setStyleSheet(f"color: {_theme.current.success}; font-size: 12px;")
+            if cs2_tab and hasattr(cs2_tab, "install_btn"):
+                cs2_tab.install_btn.setVisible(False)   # installed now — hide the button
             QMessageBox.information(self, "GSI Installed",
                 "Config installed.\nRestart CS2 for it to take effect.")
         else:
