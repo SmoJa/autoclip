@@ -379,6 +379,27 @@ class RecordingTab(QWidget):
         app_l.addWidget(self.record_without_game_chk)
         layout.addWidget(app_g)
 
+        # Updates — check + one-click install (no automatic/silent updates).
+        # The widgets live here (Settings tab); the logic lives on MainWindow, reached
+        # via the _main_window back-reference it sets after building this tab.
+        from .. import __version__ as _ver
+        upd_g = QGroupBox("Updates")
+        upd_l = QVBoxLayout(upd_g)
+        upd_row = QHBoxLayout()
+        self._update_status_lbl = QLabel(f"AutoClip v{_ver}")
+        self._update_status_lbl.setStyleSheet(f"color:{_theme.current.text_dim}; font-size:12px;")
+        self._update_btn = QPushButton("Check for Updates")
+        self._update_btn.setToolTip(
+            "Check GitHub for a newer release. AutoClip never updates on its own —\n"
+            "if one is found, this becomes an Install button you click when ready."
+        )
+        self._update_btn.clicked.connect(lambda: self._main_window._on_update_btn_clicked())
+        upd_row.addWidget(self._update_status_lbl)
+        upd_row.addStretch()
+        upd_row.addWidget(self._update_btn)
+        upd_l.addLayout(upd_row)
+        layout.addWidget(upd_g)
+
         # Output directory
         dir_g = QGroupBox("Output Directory")
         dir_l = QHBoxLayout(dir_g)
@@ -1196,6 +1217,7 @@ class MainWindow(QMainWindow):
     _event_sig = pyqtSignal(str)
     _clip_sig = pyqtSignal(str)
     _update_sig = pyqtSignal(object, bool)   # (result, manual)
+    _apply_sig = pyqtSignal(str, str)        # (apply status, release page url)
 
     def __init__(self, controller: AppController):
         super().__init__()
@@ -1203,6 +1225,7 @@ class MainWindow(QMainWindow):
         self.config = controller.config
         self._current_game = None
         self._clip_count = 0
+        self._pending_update = None   # (tag, win_url, page) once a check finds one
         self.setWindowTitle("AutoClip")
         self.setMinimumSize(740, 580)
         if not self._restore_geometry():
@@ -1355,47 +1378,93 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _on_update_btn_clicked(self):
+        # One button, two roles: install a found update, else check for one.
+        if self._pending_update:
+            self._install_update()
+        else:
+            self._check_for_updates(manual=True)
+
     def _check_for_updates(self, manual: bool = False):
         """Check GitHub releases in the background; result handled on the GUI thread."""
         import threading
         from ..core import updater
+        tab = getattr(self, "rec_tab", None)
+        if tab is not None and hasattr(tab, "_update_btn"):
+            tab._update_btn.setEnabled(False)
+            tab._update_status_lbl.setText("Checking for updates…")
+            tab._update_status_lbl.setStyleSheet(
+                f"color:{_theme.current.text_dim}; font-size:12px;")
 
         def _work():
             self._update_sig.emit(updater.check_for_update(), manual)
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_update_result(self, result, manual: bool):
-        import webbrowser
+        """Update the Settings UI (and a non-modal tray alert) — never auto-installs."""
         from .. import __version__ as _ver
-        from ..core import updater
+        tab = getattr(self, "rec_tab", None)
+        has_ui = tab is not None and hasattr(tab, "_update_btn")
+        if has_ui:
+            tab._update_btn.setEnabled(True)
+
         if not result:
+            self._pending_update = None
+            if has_ui:
+                tab._update_btn.setText("Check for Updates")
+                tab._update_status_lbl.setText(f"Up to date (v{_ver})")
+                tab._update_status_lbl.setStyleSheet(
+                    f"color:{_theme.current.text_dim}; font-size:12px;")
             if manual:
-                QMessageBox.information(self, "AutoClip",
-                                       f"You're up to date (v{_ver}).")
+                self.tray.showMessage("AutoClip", f"You're up to date (v{_ver}).",
+                                      QSystemTrayIcon.MessageIcon.Information, 2500)
             return
-        tag, win_url, page = result
-        Btn = QMessageBox.StandardButton
+
+        tag, _win_url, _page = result
+        self._pending_update = result
+        if has_ui:
+            tab._update_status_lbl.setText(f"Update available: {tag}")
+            tab._update_status_lbl.setStyleSheet(
+                f"color:{_theme.current.accent}; font-size:12px; font-weight:bold;")
+            tab._update_btn.setText(f"Install {tag}")
+        # Non-modal alert so a background check still lets the user know.
+        self.tray.showMessage("AutoClip — update available",
+                              f"{tag} is ready. Open Settings → Updates to install.",
+                              QSystemTrayIcon.MessageIcon.Information, 4000)
+
+    def _install_update(self):
+        """One-click install of the pending update (download/apply runs off the GUI thread)."""
+        import threading, webbrowser
+        from ..core import updater
+        if not self._pending_update:
+            return
+        tab = self.rec_tab
+        tag, win_url, page = self._pending_update
         if not updater.can_self_update():
-            # Dev/source-without-git or no installer asset — just point at the page.
-            if QMessageBox.question(self, "Update available",
-                    f"AutoClip {tag} is available (you have v{_ver}).\n\nOpen the download page?",
-                    Btn.Yes | Btn.No) == Btn.Yes:
-                webbrowser.open(page)
+            # Dev/source-without-git or no installer asset — hand off to the browser.
+            webbrowser.open(page)
+            tab._update_status_lbl.setText("Opened the download page in your browser.")
             return
-        if QMessageBox.question(self, "Update available",
-                f"AutoClip {tag} is available (you have v{_ver}).\n\nUpdate now?",
-                Btn.Yes | Btn.No) != Btn.Yes:
-            return
-        status = updater.apply_update(win_url)   # Windows: installer; Linux: git pull
+        tab._update_btn.setEnabled(False)
+        tab._update_status_lbl.setText(f"Downloading {tag}…")
+
+        def _work():
+            self._apply_sig.emit(updater.apply_update(win_url), page)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_apply_result(self, status: str, page: str):
+        import webbrowser
+        tab = self.rec_tab
         if status == "installing":
             self._quit()
         elif status == "updated-restart":
+            tab._update_status_lbl.setText("Updated — restart AutoClip to apply.")
             QMessageBox.information(self, "Update installed",
-                                   "AutoClip was updated. Please restart it to apply.")
+                                   "AutoClip was updated. Restart it to apply the changes.")
             self._quit()
         else:
-            QMessageBox.warning(self, "Update failed",
-                                "Couldn't update automatically — opening the download page.")
+            tab._update_status_lbl.setText("Update failed — opened the download page.")
+            tab._update_btn.setEnabled(True)
             webbrowser.open(page)
 
     def _wire(self):
@@ -1403,8 +1472,9 @@ class MainWindow(QMainWindow):
         self._event_sig.connect(self._on_event)
         self._clip_sig.connect(self._on_clip)
         self._update_sig.connect(self._on_update_result)
-        # Auto-check for updates shortly after launch when this install can apply one
-        # (Windows: frozen exe; Linux: git source install).
+        self._apply_sig.connect(self._on_apply_result)
+        # Background-check shortly after launch to ALERT (non-modal) when an update
+        # exists — it never installs on its own; the user clicks Install in Settings.
         from ..core import updater
         if updater.can_self_update():
             QTimer.singleShot(4000, lambda: self._check_for_updates(manual=False))
@@ -1412,6 +1482,7 @@ class MainWindow(QMainWindow):
         self.controller.on_event = lambda e: self._event_sig.emit(e)
         self.controller.on_clip_saved = lambda r: self._clip_sig.emit(r)
         self.rec_tab._controller = self.controller
+        self.rec_tab._main_window = self   # so the Settings "Updates" button reaches update logic
         self.audio_triggers_tab._controller = self.controller
         # Pass plugin trigger styles to event log
         styles = getattr(self.controller, 'trigger_log_style', {})
