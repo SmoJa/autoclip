@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.0] - 2026-06-16
+
+### Added
+
+- **Windows support** — AutoClip now runs on Windows 10/11 alongside Linux, sharing one cross-platform core with thin platform modules. The recording backend is a bundled **libobs** engine (the OBS capture core, driven via ctypes) using Windows Graphics Capture + NVENC/x264; nothing extra to install.
+- **Per-application audio capture (Windows)** — capture specific apps (e.g. the game and your chat program) as separate audio tracks, not just audio devices.
+- **NVENC encoding controls (Windows)** — rate control (CBR/VBR/CQP), quality/CQ, encoder preset (P1–P7), multipass, profile, B-frames, and AV1, with one-click hardware-aware presets (Quality / Balanced / Performance / Storage saver) and per-setting tooltips.
+- **Update notifications** — a new **Settings → Updates** section checks GitHub for newer releases and installs with one click. AutoClip never updates silently.
+- **System tray behaviour** — single-instance guard (a second launch surfaces the running window), click-tray-to-restore, and a "Start minimized to system tray" option for boot-start.
+- **User drop-in plugins** — add game/audio-trigger plugins by dropping a `.py` into `…/autoclip/plugins/{games,audio}` (works in the packaged build, no rebuild).
+- **Windows installer + packaging** — per-user Inno Setup installer (`AutoClip-Setup-*.exe`, no admin). The app ships as a frozen runtime with the `autoclip` package shipped loose, so routine updates replace files in place instead of reinstalling.
+
+### Changed
+
+- **Update flow** — replaced the modal "update now?" prompt with the non-intrusive Settings → Updates panel (background check only alerts; install is user-initiated).
+- **Self-updater is cross-platform** — Windows applies a loose-code or installer update; Linux updates via `git pull`.
+
+---
+
 ## [0.1.2] - 2026-05-24
 
 ### Added
