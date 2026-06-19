@@ -2,7 +2,7 @@
 Name=AutoClip
 Comment=Automatic game clip recorder
 Exec=bash -c "~/.local/share/autoclip/autoclip/run.sh"
-Icon=video-display
+Icon=autoclip
 Terminal=false
 Type=Application
 Categories=Game;Utility;

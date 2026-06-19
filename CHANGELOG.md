@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.2.2] - 2026-06-19
+
+### Added
+
+- **Per-app audio sources for triggers** — the Reactions and Phrases triggers can now listen to a specific application (your game or voice chat), not just audio devices, matching the screen recorder's per-app capture. Both platforms share a common audio backend; Windows captures app audio via a libobs process-loopback helper.
+
+### Changed
+
+- **Notifications now show "AutoClip" and the app icon** instead of "python" and a generic icon — Windows registers an explicit app identity (and the installer's Start-menu shortcut carries it); Linux ships a real icon for its desktop entry.
+- **The clip player is released when AutoClip is minimized to the system tray**, freeing its memory (~230 MB while a clip is loaded). It rebuilds automatically the next time you open a clip; reopening the window lands on the Dashboard. Recording, game state, and triggers keep running in the tray.
+- **Self-updater** now applies light updates by overlaying the payload onto the install folder, so future loose-file additions ship without an updater change.
+
+(Runtime change — Windows users receive a full installer update for this release; lightweight loose-code updates resume from the next one.)
+
+---
+
 ## [0.2.1] - 2026-06-17
 
 ### Fixed

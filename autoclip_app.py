@@ -16,7 +16,7 @@ import sys
 import logging
 import tempfile
 
-RUNTIME_VERSION = 2
+RUNTIME_VERSION = 3
 
 
 def _install_dir() -> str:

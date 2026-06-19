@@ -1751,6 +1751,20 @@ class PlayerView(QWidget):
         self._player.load(clip.path, is_hdr=clip.is_hdr)
         self._pos_timer.start()
 
+    def release(self):
+        """Fully tear down the player and free mpv's memory (window → tray)."""
+        self._pos_timer.stop()
+        if self._player:
+            try:
+                self._player.stop()
+            except Exception:
+                pass
+        self._player = None
+        try:
+            self._video_widget.cleanup()
+        except Exception:
+            pass
+
     def _on_markers_toggled(self, checked: bool):
         if checked:
             self._timeline.set_markers(self._current_markers)
@@ -2105,12 +2119,10 @@ class ClipsTab(QWidget):
         self._grid_view.clip_selected.connect(self._open_player)
         self._grid_view.connect_refresh(self.refresh)
 
-        self._player_view = PlayerView(config)
-        self._player_view.back_requested.connect(self._close_player)
-        self._player_view.export_done.connect(self.refresh)
+        # Player is created on demand and torn down while in the tray (frees mpv).
+        self._player_view = None
 
-        self._stack.addWidget(self._grid_view)   # index 0
-        self._stack.addWidget(self._player_view) # index 1
+        self._stack.addWidget(self._grid_view)   # index 0 (grid)
         layout.addWidget(self._stack)
 
         # File system watcher — auto-refresh when new clips are saved
@@ -2166,9 +2178,42 @@ class ClipsTab(QWidget):
         self._grid_view._refresh_view()  # re-render cards with durations
         _purge_unused_thumbnails(self._clips)
 
+    def _ensure_player_view(self) -> PlayerView:
+        """Create the player view lazily (it's destroyed while in the tray)."""
+        if self._player_view is None:
+            self._player_view = PlayerView(self.config)
+            self._player_view.back_requested.connect(self._close_player)
+            self._player_view.export_done.connect(self.refresh)
+            self._stack.addWidget(self._player_view)
+        return self._player_view
+
     def _open_player(self, clip: Clip):
-        self._player_view.load(clip)
-        self._stack.setCurrentIndex(1)
+        pv = self._ensure_player_view()
+        pv.load(clip)
+        self._stack.setCurrentIndex(self._stack.indexOf(pv))
 
     def _close_player(self):
         self._stack.setCurrentIndex(0)
+
+    def release_player(self):
+        """Window → tray: free the whole player (mpv core + decode buffers) and stop
+        the directory watcher. Recording/GSI/triggers are separate and keep running."""
+        self._suspended_dirs = self._watcher.directories()
+        if self._suspended_dirs:
+            self._watcher.removePaths(self._suspended_dirs)
+        self._stack.setCurrentIndex(0)            # show the grid
+        if self._player_view is not None:
+            pv = self._player_view
+            self._player_view = None
+            self._stack.removeWidget(pv)
+            pv.release()
+            pv.deleteLater()
+
+    def restore_after_tray(self):
+        """Window restored: re-watch the output dir and refresh once. The player is
+        recreated on demand when the user next opens a clip."""
+        dirs = getattr(self, "_suspended_dirs", None)
+        if dirs:
+            self._watcher.addPaths(dirs)
+        self._suspended_dirs = None
+        self.refresh()

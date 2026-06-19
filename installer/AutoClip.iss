@@ -4,7 +4,7 @@
 ; Inputs: ..\dist\AutoClip\  (PyInstaller runtime)   ..\obs-runtime\  (recorder bundle)
 ;         ..\autoclip\       (loose app source — Option A, updated by file replacement)
 
-#define AppVer "0.2.1"
+#define AppVer "0.2.2"
 
 [Setup]
 AppId={{C4D7E8F1-3A2B-4C5D-8E9F-1A2B3C4D5E6F}
@@ -39,8 +39,10 @@ Source: "..\obs-runtime\*";    DestDir: "{app}\obs-runtime";  Flags: recursesubd
 Source: "..\autoclip\*";       DestDir: "{app}\autoclip";     Flags: recursesubdirs ignoreversion; Excludes: "__pycache__\*,*.pyc,*.pyo"
 
 [Icons]
-Name: "{userprograms}\AutoClip"; Filename: "{app}\AutoClip.exe"
-Name: "{userdesktop}\AutoClip";  Filename: "{app}\AutoClip.exe"; Tasks: desktopicon
+; AppUserModelID matches what the app sets at startup, so Windows toast
+; notifications show "AutoClip" + the app icon (not "python" / a generic icon).
+Name: "{userprograms}\AutoClip"; Filename: "{app}\AutoClip.exe"; AppUserModelID: "SmoJa.AutoClip"
+Name: "{userdesktop}\AutoClip";  Filename: "{app}\AutoClip.exe"; Tasks: desktopicon; AppUserModelID: "SmoJa.AutoClip"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"

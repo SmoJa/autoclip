@@ -1049,6 +1049,7 @@ class RecordingTab(QWidget):
                 "[Desktop Entry]\n"
                 "Type=Application\n"
                 "Name=AutoClip\n"
+                "Icon=autoclip\n"
                 "Comment=Automatic game clip recorder\n"
                 f"Exec=bash -c \"cd {install_dir} && QT_QPA_PLATFORM=xcb "
                 f"python3 -m autoclip.main >> /tmp/autoclip.log 2>&1\"\n"
@@ -1652,6 +1653,38 @@ class MainWindow(QMainWindow):
             "Right-click the tray icon to quit.",
             QSystemTrayIcon.MessageIcon.Information, 2500)
 
+    # --- Free UI resources while hidden to the system tray ------------------
+    # When the window goes to the tray we tear down the whole clip player so
+    # mpv's memory (core + decode buffers) is released; it's rebuilt on demand
+    # when the user reopens a clip. Recording, GSI, and the audio/game triggers
+    # run in their own threads/process and are deliberately untouched.
+    def hideEvent(self, event):
+        self._enter_tray()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        self._exit_tray()
+        super().showEvent(event)
+
+    def _enter_tray(self):
+        if getattr(self, "_in_tray", False) or not hasattr(self, "clips_tab"):
+            return
+        self._in_tray = True
+        try:
+            self.clips_tab.release_player()
+            self.tabs.setCurrentIndex(0)   # reopen on the dashboard
+        except Exception:
+            logger.debug("tray teardown failed", exc_info=True)
+
+    def _exit_tray(self):
+        if not getattr(self, "_in_tray", False):
+            return
+        self._in_tray = False
+        try:
+            self.clips_tab.restore_after_tray()
+        except Exception:
+            logger.debug("tray restore failed", exc_info=True)
+
     def _quit(self):
         self._save_geometry()
         self.controller.stop()
@@ -1716,8 +1749,27 @@ def run_app():
     if _sys.platform == "win32":
         import os as _os
         _os.environ.setdefault("QT_OPENGL", "desktop")
+        # Windows toast notifications inherit the app name + icon from the process's
+        # AppUserModelID. Without one they show "python" + a generic icon. Register an
+        # explicit ID (display name + icon) and adopt it so toasts read "AutoClip" with
+        # our icon. (The installer also tags its Start-menu shortcut with this same ID.)
+        try:
+            import ctypes as _ct, winreg as _wr
+            _aumid = "SmoJa.AutoClip"
+            _ico = str(Path(__file__).parent / "autoclip.ico")
+            with _wr.CreateKey(_wr.HKEY_CURRENT_USER,
+                               rf"Software\Classes\AppUserModelId\{_aumid}") as _k:
+                _wr.SetValueEx(_k, "DisplayName", 0, _wr.REG_SZ, "AutoClip")
+                if _os.path.exists(_ico):
+                    _wr.SetValueEx(_k, "IconUri", 0, _wr.REG_SZ, _ico)
+            _ct.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_ct.c_wchar_p(_aumid))
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName("AutoClip")
+    # Tie the process to its desktop entry (autoclip.desktop) so Linux/Wayland match
+    # the app icon for the window, taskbar, and notifications. No-op off Linux.
+    app.setDesktopFileName("autoclip")
 
     # Single-instance guard (cross-platform via Qt local sockets). A second launch
     # connects to the running instance, asks it to surface, then exits — before any
