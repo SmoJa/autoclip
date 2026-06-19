@@ -165,31 +165,46 @@ def _apply_windows(url: Optional[str], on_progress) -> str:
 
 
 def _apply_windows_code_update(url: str, on_progress) -> bool:
-    """Replace the loose autoclip/ package in place from a source-zip asset. Loose .py
-    files aren't locked while the app runs, so this is safe; it takes effect on restart."""
+    """Apply a light update by OVERLAYING the payload tree onto the install folder.
+
+    The payload zip mirrors the install layout (autoclip/ + the loose obs-runtime
+    helper scripts), so this is fully generic: a future update that adds a new loose
+    file just includes it in the tree — no change needed here. Loose files aren't
+    locked while the app runs, so the overlay is safe and takes effect on restart.
+    Locked files (the frozen exe, obs-runtime binaries) are never in the payload —
+    those only change via the full installer (gated by RUNTIME_VERSION)."""
+    import os
     install_dir = Path(__file__).resolve().parents[2]   # <app>/autoclip/core/updater.py -> <app>
     if not (install_dir / "autoclip").is_dir():
         logger.error("Loose autoclip/ not found beside the app — can't code-update.")
         return False
     tmp = Path(tempfile.mkdtemp(prefix="autoclip-upd-"))
     try:
-        zpath = tmp / "src.zip"
+        zpath = tmp / "update.zip"
         def _hook(block, size, total):
             if on_progress and total > 0:
                 on_progress(min(100, int(block * size * 100 / total)))
         urllib.request.urlretrieve(url, str(zpath), _hook if on_progress else None)
+        payload = tmp / "payload"
         with zipfile.ZipFile(zpath) as zf:
-            zf.extractall(tmp)
-        # The asset packs the tree at root: <zip>/autoclip/...
-        src_pkg = tmp / "autoclip"
-        if not src_pkg.is_dir():
-            logger.error("Source zip has no top-level autoclip/ — aborting.")
+            zf.extractall(payload)
+        # A valid payload always carries the app package at its mirrored path.
+        if not (payload / "autoclip").is_dir():
+            logger.error("Update payload has no autoclip/ — aborting.")
             return False
-        shutil.copytree(src_pkg, install_dir / "autoclip", dirs_exist_ok=True)
+        # Overlay every payload file onto the install dir at its mirrored location.
+        count = 0
+        for root, _dirs, files in os.walk(payload):
+            rel = Path(root).relative_to(payload)
+            for f in files:
+                dest = install_dir / rel / f
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(Path(root) / f, dest)
+                count += 1
         # Drop stale bytecode so the new .py recompile cleanly on restart.
         for pyc in (install_dir / "autoclip").rglob("__pycache__"):
             shutil.rmtree(pyc, ignore_errors=True)
-        logger.info(f"Loose code updated in {install_dir / 'autoclip'}")
+        logger.info(f"Light update applied — overlaid {count} file(s) into {install_dir}")
         return True
     except Exception as e:
         logger.error(f"Code update failed: {e}")

@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Package the loose `autoclip/` source tree for a code-only update (Option A).
-# Produces release/autoclip-src-<version>-rt<runtime>.zip with autoclip/ at the root.
-# Attach this zip to a GitHub release; installed Windows apps with a compatible runtime
-# will download it and replace their loose autoclip/ in place (no installer needed).
+# Package a light code-only update payload (Option A).
 #
-# Bump RUNTIME_VERSION in autoclip_app.py ONLY when the frozen runtime / deps change;
-# then a fresh installer must ship and older installs will fall back to it automatically.
+# The zip MIRRORS the install layout — files sit at their real install-relative
+# paths — and the updater simply overlays the tree onto the install folder. So
+# adding a new loose file to a future update is just: include it here at its path.
+# No updater change needed. (The big obs-runtime binaries and the frozen runtime
+# are NOT here — those only change via the full installer.)
 #
-# Usage:  pwsh scripts/build-src-zip.ps1
+# Currently shipped: autoclip/ (the app) + the loose obs-runtime helper scripts.
+# Produces release/autoclip-src-<version>-rt<runtime>.zip. Attach to a GitHub release.
 [CmdletBinding()]
 param()
 $ErrorActionPreference = "Stop"
@@ -24,15 +25,26 @@ New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 $out = Join-Path $releaseDir "autoclip-src-$version-rt$runtime.zip"
 if (Test-Path $out) { Remove-Item $out -Force }
 
-# Stage a clean copy of autoclip/ (no caches) so the zip has autoclip/ at its root.
-$stage = Join-Path $env:TEMP "autoclip-src-stage"
+# Stage a tree that mirrors the install layout.
+$stage = Join-Path $env:TEMP "autoclip-update-stage"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+# autoclip/ (the app package, no caches)
 Copy-Item (Join-Path $repo "autoclip") (Join-Path $stage "autoclip") -Recurse
 Get-ChildItem $stage -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 Get-ChildItem $stage -Recurse -Include *.pyc,*.pyo | Remove-Item -Force
 
-Compress-Archive -Path (Join-Path $stage "autoclip") -DestinationPath $out
+# obs-runtime/ — only the loose helper scripts (run by the embeddable python;
+# their source is autoclip/core/). Keep this list in sync with build-obs-runtime.ps1.
+$obsStage = Join-Path $stage "obs-runtime"
+New-Item -ItemType Directory -Force -Path $obsStage | Out-Null
+foreach ($h in "obs_recorder.py", "obs_audio_capture.py") {
+    Copy-Item (Join-Path $repo "autoclip\core\$h") (Join-Path $obsStage $h)
+}
+
+# Zip the staged top-level entries so the archive root = the install-relative tree.
+Compress-Archive -Path (Get-ChildItem $stage | ForEach-Object { $_.FullName }) -DestinationPath $out
 Remove-Item $stage -Recurse -Force
 
 $mb = [math]::Round((Get-Item $out).Length/1MB, 2)
