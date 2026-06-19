@@ -47,10 +47,11 @@ foreach ($m in $mods) {
 }
 Copy-Item "$ObsDir\data\libobs" (Join-Path $OutDir "data") -Recurse -Force
 
-# 5) the recorder script itself (self-contained: stdlib + ctypes), so the bundled
-#    OBS python can run it by path even when the GUI is frozen into an exe.
-$recSrc = Join-Path (Split-Path $PSScriptRoot -Parent) "autoclip\core\obs_recorder.py"
-Copy-Item $recSrc (Join-Path $OutDir "obs_recorder.py") -Force
+# 5) the recorder + audio-capture helper scripts (self-contained: stdlib + ctypes),
+#    so the bundled OBS python can run them by path even when the GUI is frozen.
+$core = Join-Path (Split-Path $PSScriptRoot -Parent) "autoclip\core"
+Copy-Item (Join-Path $core "obs_recorder.py")      (Join-Path $OutDir "obs_recorder.py") -Force
+Copy-Item (Join-Path $core "obs_audio_capture.py") (Join-Path $OutDir "obs_audio_capture.py") -Force
 
 $mb = [math]::Round((Get-ChildItem $OutDir -Recurse -File | Measure-Object Length -Sum).Sum/1MB, 1)
 Write-Host "Built $OutDir ($mb MB)"

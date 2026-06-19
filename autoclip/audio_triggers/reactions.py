@@ -158,41 +158,26 @@ class ReactionsPlugin(AudioTriggerPlugin):
         self._running = False
 
     def _resolve_sources(self, cfg: ReactionsConfig) -> list[tuple]:
-        import sounddevice as sd
+        from autoclip.core import audio_sources
         sources = []
         if cfg.mic_enabled:
-            device = self._find_device(sd, cfg.mic_device, monitor=False)
-            sources.append((device, "mic"))
-            logger.info(f"Reactions mic source: {device!r} ({cfg.mic_device or 'default'})")
+            src = audio_sources.resolve_source(cfg.mic_device, monitor=False)
+            sources.append((src, "mic"))
+            logger.info(f"Reactions mic source: {src!r} ({cfg.mic_device or 'default'})")
         if cfg.chat_enabled:
-            device = self._find_device(sd, cfg.chat_device, monitor=True)
-            sources.append((device, "chat"))
-            logger.info(f"Reactions chat source: {device!r} ({cfg.chat_device or 'auto-monitor'})")
+            src = audio_sources.resolve_source(cfg.chat_device, monitor=True)
+            sources.append((src, "chat"))
+            logger.info(f"Reactions chat source: {src!r} ({cfg.chat_device or 'auto-monitor'})")
         return sources
 
-    @staticmethod
-    def _find_device(sd, name: str, monitor: bool) -> Optional[int]:
-        if name:
-            for i, d in enumerate(sd.query_devices()):
-                if name in d["name"] and d["max_input_channels"] > 0:
-                    return i
-            logger.warning(f"Audio device '{name}' not found, using default")
-            return None
-        if monitor:
-            for i, d in enumerate(sd.query_devices()):
-                if "monitor" in d["name"].lower() and d["max_input_channels"] > 0:
-                    return i
-            logger.warning("No monitor device found for chat audio capture")
-        return None
-
-    def _run_source(self, device: Optional[int], source_label: str):
-        import sounddevice as sd
+    def _run_source(self, source_spec, source_label: str):
+        from autoclip.core import audio_sources
         ring  = np.zeros(WINDOW_SAMPLES, dtype=np.float32)
         head  = 0
         since = 0
         try:
-            with sd.InputStream(device=device, channels=1, samplerate=SAMPLE_RATE,
-                                blocksize=BLOCK_SIZE, dtype="float32") as stream:
+            with audio_sources.open_stream(source_spec, SAMPLE_RATE, BLOCK_SIZE,
+                                           dtype="float32") as stream:
                 while self._running:
                     block, _ = stream.read(BLOCK_SIZE)
                     samples   = block.flatten()
@@ -271,55 +256,13 @@ def ReactionsWidget(config: Any, parent=None):
 
     t = _theme.current
 
-    def _gsr_friendly_names():
-        try:
-            from autoclip.core.audio import get_gsr_audio_devices
-            gsr_path = getattr(config, "gpu_recorder_path", "gpu-screen-recorder")
-            return {src.device: src.name for src in get_gsr_audio_devices(gsr_path)}
-        except Exception:
-            return {}
-
     def _input_devices():
-        friendly = _gsr_friendly_names()
-        devs = [("System default", "")]
-        try:
-            import sounddevice as sd
-            for d in sd.query_devices():
-                if d["max_input_channels"] > 0 and "monitor" not in d["name"].lower():
-                    name = d["name"]
-                    devs.append((friendly.get(name, name), name))
-        except Exception:
-            pass
-        return devs
+        from autoclip.core import audio_sources
+        return audio_sources.input_sources(config)
 
     def _monitor_devices():
-        friendly = _gsr_friendly_names()
-        chat_hint = ""
-        try:
-            from autoclip.core.audio import get_pw_app_nodes, CHAT_APP_BINARIES, FRIENDLY_APP_NAMES
-            for node in get_pw_app_nodes():
-                binary = node.get("binary", "").lower()
-                if any(c in binary for c in CHAT_APP_BINARIES):
-                    chat_hint = FRIENDLY_APP_NAMES.get(binary, binary.capitalize())
-                    break
-        except Exception:
-            pass
-        label0   = "Auto-detect monitor" + (f"  ({chat_hint} detected)" if chat_hint else "")
-        monitors = [(label0, "")]
-        others   = []
-        try:
-            import sounddevice as sd
-            for d in sd.query_devices():
-                if d["max_input_channels"] > 0:
-                    name  = d["name"]
-                    label = friendly.get(name, name)
-                    if "monitor" in name.lower():
-                        monitors.append((label, name))
-                    else:
-                        others.append((label, name))
-        except Exception:
-            pass
-        return monitors + others
+        from autoclip.core import audio_sources
+        return audio_sources.monitor_sources(config)
 
     def _recorder_mic_device():
         for track in (getattr(config, "audio_tracks", None) or []):

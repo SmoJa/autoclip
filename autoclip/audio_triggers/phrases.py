@@ -119,39 +119,24 @@ class PhrasesPlugin(AudioTriggerPlugin):
     # ── Source resolution ──────────────────────────────────────────────────────
 
     def _resolve_sources(self, cfg: PhrasesConfig) -> list[tuple]:
-        import sounddevice as sd
+        from autoclip.core import audio_sources
         sources = []
         if cfg.mic_enabled:
-            device = self._find_device(sd, cfg.mic_device, monitor=False)
-            sources.append((device, "mic"))
-            logger.info(f"'Phrases' mic source: {device!r} ({cfg.mic_device or 'default'})")
+            src = audio_sources.resolve_source(cfg.mic_device, monitor=False)
+            sources.append((src, "mic"))
+            logger.info(f"'Phrases' mic source: {src!r} ({cfg.mic_device or 'default'})")
         if cfg.chat_enabled:
-            device = self._find_device(sd, cfg.chat_device, monitor=True)
-            sources.append((device, "chat"))
-            logger.info(f"'Phrases' chat source: {device!r} ({cfg.chat_device or 'auto-monitor'})")
+            src = audio_sources.resolve_source(cfg.chat_device, monitor=True)
+            sources.append((src, "chat"))
+            logger.info(f"'Phrases' chat source: {src!r} ({cfg.chat_device or 'auto-monitor'})")
         return sources
-
-    @staticmethod
-    def _find_device(sd, name: str, monitor: bool) -> Optional[int]:
-        if name:
-            for i, d in enumerate(sd.query_devices()):
-                if name in d["name"] and d["max_input_channels"] > 0:
-                    return i
-            logger.warning(f"Audio device '{name}' not found — using default")
-            return None
-        if monitor:
-            for i, d in enumerate(sd.query_devices()):
-                if "monitor" in d["name"].lower() and d["max_input_channels"] > 0:
-                    return i
-            logger.warning("No monitor device found for chat audio")
-        return None
 
     # ── Detection loop ─────────────────────────────────────────────────────────
 
-    def _run_source(self, device: Optional[int], label: str,
+    def _run_source(self, source_spec, label: str,
                     cfg: PhrasesConfig, model):
-        import sounddevice as sd
         import vosk
+        from autoclip.core import audio_sources
 
         phrases = [p.strip().lower() for p in cfg.phrases.split(",") if p.strip()]
         grammar = json.dumps(phrases + ["[unk]"])
@@ -159,8 +144,8 @@ class PhrasesPlugin(AudioTriggerPlugin):
         rec.SetGrammar(grammar)
 
         try:
-            with sd.InputStream(device=device, channels=1, samplerate=SAMPLE_RATE,
-                                blocksize=BLOCK_SIZE, dtype="int16") as stream:
+            with audio_sources.open_stream(source_spec, SAMPLE_RATE, BLOCK_SIZE,
+                                           dtype="int16") as stream:
                 while self._running:
                     block, _ = stream.read(BLOCK_SIZE)
                     if rec.AcceptWaveform(block.tobytes()):
@@ -206,44 +191,13 @@ def PhrasesWidget(config: Any, parent=None):
     t = _theme.current
 
     # ── Helpers (shared with laughter widget) ──────────────────────────────
-    def _gsr_friendly_names():
-        try:
-            from autoclip.core.audio import get_gsr_audio_devices
-            gsr_path = getattr(config, "gpu_recorder_path", "gpu-screen-recorder")
-            return {src.device: src.name for src in get_gsr_audio_devices(gsr_path)}
-        except Exception:
-            return {}
-
     def _input_devices():
-        friendly = _gsr_friendly_names()
-        devs = [("System default", "")]
-        try:
-            import sounddevice as sd
-            for d in sd.query_devices():
-                if d["max_input_channels"] > 0 and "monitor" not in d["name"].lower():
-                    name = d["name"]
-                    devs.append((friendly.get(name, name), name))
-        except Exception:
-            pass
-        return devs
+        from autoclip.core import audio_sources
+        return audio_sources.input_sources(config)
 
     def _monitor_devices():
-        friendly = _gsr_friendly_names()
-        monitors = [("Auto-detect monitor", "")]
-        others   = []
-        try:
-            import sounddevice as sd
-            for d in sd.query_devices():
-                if d["max_input_channels"] > 0:
-                    name  = d["name"]
-                    label = friendly.get(name, name)
-                    if "monitor" in name.lower():
-                        monitors.append((label, name))
-                    else:
-                        others.append((label, name))
-        except Exception:
-            pass
-        return monitors + others
+        from autoclip.core import audio_sources
+        return audio_sources.monitor_sources(config)
 
     def _build_combo(items, current) -> NoScrollComboBox:
         combo = NoScrollComboBox()
