@@ -325,6 +325,9 @@ def _set_default_format():
 
 if _sys.platform != "win32":
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget as _QOpenGLWidget
+    # Must be called before QApplication creates any window surfaces.
+    # Runs at import time — player.py is imported before run_app() is entered.
+    _set_default_format()
 
     class _MpvWidgetLinux(_QOpenGLWidget):
         """
@@ -337,7 +340,6 @@ if _sys.platform != "win32":
         _refresh_frame_sig = pyqtSignal()
 
         def __init__(self, parent=None):
-            _set_default_format()
             super().__init__(parent)
             self._mpv = None
             self._ctx = None
@@ -357,6 +359,12 @@ if _sys.platform != "win32":
             self._refresh_frame_sig.connect(self._refresh_frame, Qt.ConnectionType.QueuedConnection)
 
         def initializeGL(self):
+            self._init_mpv()
+
+        def _init_mpv(self):
+            """Initialize (or reinitialize) mpv and its render context.
+            Must be called with an active OpenGL context (guaranteed by Qt when
+            called from initializeGL; caller must makeCurrent() otherwise)."""
             try:
                 import mpv as _mpv
             except (ImportError, OSError) as e:
@@ -422,9 +430,10 @@ if _sys.platform != "win32":
                 self._ready = True
                 logger.info("mpv OpenGL render context ready")
 
-                self._render_timer = QTimer(self)
-                self._render_timer.setInterval(16)
-                self._render_timer.timeout.connect(self._force_repaint)
+                if not hasattr(self, '_render_timer'):
+                    self._render_timer = QTimer(self)
+                    self._render_timer.setInterval(16)
+                    self._render_timer.timeout.connect(self._force_repaint)
                 self._render_timer.start()
 
                 logger.info(f"GL ready — pending={self._pending_path}")
@@ -539,6 +548,15 @@ if _sys.platform != "win32":
             self._is_hdr = is_hdr
             self._pending_is_hdr = is_hdr
             logger.info(f"Player.load called: ready={self._ready} path={path} is_hdr={is_hdr}")
+            if self._mpv is None:
+                # mpv was torn down (tray); reinitialize with active GL context
+                self._pending_path = path
+                try:
+                    self.makeCurrent()
+                    self._init_mpv()
+                finally:
+                    self.doneCurrent()
+                return
             if not self._ready:
                 self._pending_path = path
                 logger.info("mpv not ready, queuing path")

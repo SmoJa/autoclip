@@ -565,8 +565,9 @@ class GridView(QWidget):
         self._clips: list[Clip] = []
         self._nav: list = []
         self._selected_card: IconCard | None = None
-        self._sort_key     = "date"
-        self._sort_reverse = True   # newest first
+        self._sort_key        = "date"
+        self._sort_reverse    = True   # newest first (clip level)
+        self._date_sort_rev   = True   # newest first (date folder level)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -659,6 +660,41 @@ class GridView(QWidget):
         self._update_sort_dir_label()
         if len(self._nav) == 2:
             self._render_clips()
+
+    def _build_date_sort_bar(self):
+        """Show a single toggle button for date-folder sort order."""
+        for btn in self._sort_btns.values():
+            btn.deleteLater()
+        self._sort_btns.clear()
+        if self._sort_dir_btn:
+            self._sort_dir_btn.deleteLater()
+            self._sort_dir_btn = None
+        while self._sort_bar_layout.count():
+            item = self._sort_bar_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        tt = _theme.current
+        DIR_STYLE = (
+            f"QPushButton{{background:{tt.bg_overlay};color:{tt.warning};border:1px solid {tt.warning};"
+            f"padding:3px 10px;font-size:11px;border-radius:3px;}}"
+            f"QPushButton:hover{{color:{tt.accent_hover};}}"
+        )
+        label = "Newest first" if self._date_sort_rev else "Oldest first"
+        self._sort_dir_btn = QPushButton(label)
+        self._sort_dir_btn.setStyleSheet(DIR_STYLE)
+        self._sort_dir_btn.clicked.connect(self._toggle_date_sort)
+        self._sort_bar_layout.addWidget(self._sort_dir_btn)
+        self._sort_bar_layout.addStretch()
+        self._sort_bar.setVisible(True)
+
+    def _toggle_date_sort(self):
+        self._date_sort_rev = not self._date_sort_rev
+        label = "Newest first" if self._date_sort_rev else "Oldest first"
+        if self._sort_dir_btn:
+            self._sort_dir_btn.setText(label)
+        if len(self._nav) == 1:
+            self._show_dates(self._nav[0])
 
     def _build_sort_bar(self, clips: list):
         """Rebuild sort bar based on which metadata fields exist in these clips."""
@@ -766,17 +802,29 @@ class GridView(QWidget):
             cards.append(card)
         self._populate(cards)
 
+    @staticmethod
+    def _parse_date_folder(d: str):
+        from datetime import datetime
+        for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(d, fmt)
+            except ValueError:
+                continue
+        return datetime.min
+
     def _show_dates(self, game: str):
         self._nav = [game]
         self._breadcrumb.setText(f"All Games  ›  {game}")
         self._back_btn.setEnabled(True)
-        self._sort_bar.setVisible(False)
+        self._build_date_sort_bar()
         dates = {}
         for c in self._clips:
             if c.game == game:
                 dates.setdefault(c.date, 0); dates[c.date] += 1
         cards = []
-        for d, cnt in sorted(dates.items(), reverse=True):
+        for d, cnt in sorted(dates.items(),
+                              key=lambda item: self._parse_date_folder(item[0]),
+                              reverse=self._date_sort_rev):
             card = IconCard(d, f"{cnt} clips", data=(game, d),
                             pixmap=_folder_pixmap(d, _theme.current.track_chat), is_folder=True)
             card.clicked.connect(lambda tup: self._show_clips(*tup))
@@ -2119,10 +2167,12 @@ class ClipsTab(QWidget):
         self._grid_view.clip_selected.connect(self._open_player)
         self._grid_view.connect_refresh(self.refresh)
 
-        # Player is created on demand and torn down while in the tray (frees mpv).
-        self._player_view = None
+        self._player_view = PlayerView(self.config)
+        self._player_view.back_requested.connect(self._close_player)
+        self._player_view.export_done.connect(self.refresh)
 
-        self._stack.addWidget(self._grid_view)   # index 0 (grid)
+        self._stack.addWidget(self._grid_view)   # index 0
+        self._stack.addWidget(self._player_view) # index 1
         layout.addWidget(self._stack)
 
         # File system watcher — auto-refresh when new clips are saved
@@ -2178,36 +2228,21 @@ class ClipsTab(QWidget):
         self._grid_view._refresh_view()  # re-render cards with durations
         _purge_unused_thumbnails(self._clips)
 
-    def _ensure_player_view(self) -> PlayerView:
-        """Create the player view lazily (it's destroyed while in the tray)."""
-        if self._player_view is None:
-            self._player_view = PlayerView(self.config)
-            self._player_view.back_requested.connect(self._close_player)
-            self._player_view.export_done.connect(self.refresh)
-            self._stack.addWidget(self._player_view)
-        return self._player_view
-
     def _open_player(self, clip: Clip):
-        pv = self._ensure_player_view()
-        pv.load(clip)
-        self._stack.setCurrentIndex(self._stack.indexOf(pv))
+        self._player_view.load(clip)
+        self._stack.setCurrentIndex(1)
 
     def _close_player(self):
         self._stack.setCurrentIndex(0)
 
     def release_player(self):
-        """Window → tray: free the whole player (mpv core + decode buffers) and stop
-        the directory watcher. Recording/GSI/triggers are separate and keep running."""
+        """Window → tray: free mpv's decode buffers and stop the directory watcher.
+        The PlayerView widget stays in the stack; mpv reinitialises on next clip load."""
         self._suspended_dirs = self._watcher.directories()
         if self._suspended_dirs:
             self._watcher.removePaths(self._suspended_dirs)
-        self._stack.setCurrentIndex(0)            # show the grid
-        if self._player_view is not None:
-            pv = self._player_view
-            self._player_view = None
-            self._stack.removeWidget(pv)
-            pv.release()
-            pv.deleteLater()
+        self._stack.setCurrentIndex(0)
+        self._player_view.release()
 
     def restore_after_tray(self):
         """Window restored: re-watch the output dir and refresh once. The player is

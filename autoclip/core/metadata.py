@@ -12,8 +12,14 @@ All fields except GAME and TIMESTAMP are optional and omitted if unknown.
 """
 
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
+
+# Colons are illegal in NTFS filenames. Use a private-use char on Windows;
+# keep ':' on Linux/macOS where it's a valid filename character.
+# _parse_events normalises both back to ':' when decoding.
+_EV_SEP = "" if sys.platform == "win32" else ":"
 
 # ── Abbreviation tables ──────────────────────────────────────────────────────
 
@@ -212,9 +218,7 @@ class ClipMeta:
         if self.spectated_player:
             parts.append(f"spec[{safe(self.spectated_player)}]")
         if self.events:
-            # U+F022 stands in for ':' — colons are illegal in NTFS filenames,
-            # and _parse_events already maps it back when decoding
-            sep = ""
+            sep = _EV_SEP
             items = []
             for e in self.events:
                 s = f"{e.trigger}{sep}{round(e.secs_from_end, 1)}"
